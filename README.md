@@ -70,6 +70,10 @@ cmd /c tools\hr-config\build.cmd :: -> build\hr-config.exe   (Rust, 不需要 MS
 各 `.cmd` 都用 `vswhere` 自动找 MSVC，不绑死 VS 版本或安装路径。C++ 产物都是
 `/MT` 静态 CRT，目标机器不用装 VC++ 运行库。
 
+**发行版由 [GitHub Actions](.github/workflows/release.yml) 自动构建**：每次 push 到
+main 都会构建全部产物（zip 在对应运行页面的 Artifacts 里下载）；打 `v*` 标签推送时
+还会自动创建 GitHub Release 并附上完整发行包。
+
 **`ab-plugin` 必须是 x86**：`MSIAfterburner.exe` 本身是 32 位进程（PE machine
 `0x14C`），加载不了 x64 DLL。daemon 是 x64 也没关系，因为两边只通过共享内存交换
 数据，按字节布局，和位数无关。`ab-plugin\build.cmd` 会自己用 `vcvarsall.bat x86`

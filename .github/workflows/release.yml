@@ -1,0 +1,98 @@
+# 构建发行版：push main 做构建检查（zip 仅存为 workflow artifact 供下载），
+# 打 v* 标签时额外创建 GitHub Release 并附上发行 zip。
+# 全部复用仓库现有 build.cmd，脚本内置自检（尤其 ab-plugin 的 dumpbin
+# x86/导出名校验）在 CI 上同样生效。
+name: 构建发行版
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  workflow_dispatch:
+
+# 创建 Release 需要 contents:write（gh 用 GITHUB_TOKEN 认证）
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # hr-config 是零 crate 的纯 std Rust，--offline 不依赖网络；
+      # 只需保证 cargo 在 PATH 且够新（Cargo.lock 是 lockfile v4）
+      - name: 安装 Rust 工具链
+        uses: dtolnay/rust-toolchain@stable
+
+      # 五个 build.cmd 全部靠 vswhere 定位 MSVC、无本机硬编码路径，
+      # windows-latest 预装的 VS Build Tools 即满足（含 x86 工具集）
+      - name: 构建 hr-daemon（x64）
+        shell: cmd
+        run: chcp 65001 >nul && daemon\build.cmd
+
+      - name: 构建 Afterburner 插件（必须 x86，脚本内 dumpbin 自检）
+        shell: cmd
+        run: chcp 65001 >nul && ab-plugin\build.cmd
+
+      - name: 构建 TrafficMonitor 插件（x64）
+        shell: cmd
+        run: chcp 65001 >nul && tm-plugin\build.cmd
+
+      - name: 构建 OSD 测试工具（x64）
+        shell: cmd
+        run: chcp 65001 >nul && tools\osd_test\build.cmd
+
+      - name: 构建 hr-config（Rust）
+        shell: cmd
+        run: chcp 65001 >nul && tools\hr-config\build.cmd
+
+      # hr-config 的 ini_path 是 exe 同目录：fresh build\ 下无交互提示；
+      # daemon 未运行时 reset 直接写入默认配置并正常退出
+      - name: 生成示例 hr-daemon.ini
+        shell: cmd
+        run: chcp 65001 >nul && build\hr-config.exe reset
+
+      # 发行包：5 个产物 + 示例 ini + scripts 部署脚本 + 文档。
+      # tag 推送用 tag 名命名，main 推送用 dev-<短SHA>
+      - name: 组装发行包
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $tag = if ($env:GITHUB_REF_TYPE -eq 'tag') { $env:GITHUB_REF_NAME }
+                 else { "dev-$($env:GITHUB_SHA.Substring(0, 7))" }
+          $stage = "dist/HRMonitor-$tag-win64"
+          New-Item -ItemType Directory $stage | Out-Null
+          Copy-Item build/hr-daemon.exe, build/HeartRate.dll, build/hr_plugin.dll, build/hr-config.exe, build/osd_test.exe, build/hr-daemon.ini $stage/
+          Copy-Item scripts $stage/scripts -Recurse
+          Copy-Item LICENSE, THIRD_PARTY_NOTICES.md, README.md $stage/
+          Compress-Archive $stage "dist/HRMonitor-$tag-win64.zip"
+          Write-Host "发行包版本：$tag"
+          Get-ChildItem $stage | Select-Object Name, Length | Format-Table | Out-Host
+
+      - name: 上传构建产物（每次运行均可下载）
+        uses: actions/upload-artifact@v4
+        with:
+          name: HRMonitor-win64
+          path: dist/*.zip
+          if-no-files-found: error
+
+      # 仅打标签时发布；同名 Release 已存在（重跑工作流）则改为覆盖上传
+      - name: 创建 GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $zip = (Resolve-Path "dist/HRMonitor-$($env:GITHUB_REF_NAME)-win64.zip").Path
+          gh release view $env:GITHUB_REF_NAME 2>$null
+          if ($LASTEXITCODE -eq 0) {
+            gh release upload $env:GITHUB_REF_NAME $zip --clobber
+          } else {
+            gh release create $env:GITHUB_REF_NAME $zip --title "HRMonitor $env:GITHUB_REF_NAME" --generate-notes
+          }
