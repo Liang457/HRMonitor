@@ -1,0 +1,20 @@
+[package]
+name = "hr-config"
+version = "1.0.0"
+edition = "2021"
+description = "配置工具：华为手表心率 → TrafficMonitor + RTSS OSD"
+license = "MIT"
+
+# 只依赖 std：没有任何 crate，cargo 不需要联网，也不需要 vendor 目录。
+# Windows API 全部用 extern "system" 手写声明（见 src/win.rs）。
+
+[[bin]]
+name = "hr-config"
+path = "src/main.rs"
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

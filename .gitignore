@@ -1,0 +1,41 @@
+# ---- 构建产物 ---------------------------------------------------------
+build/
+daemon/obj/
+tm-plugin/obj/
+ab-plugin/obj/
+tools/osd_test/obj/
+tools/hr-config/target/
+
+# 中间文件一律不进仓库
+*.obj
+*.exp
+*.lib
+*.pdb
+*.ilk
+*.iobj
+*.ipdb
+*.res
+
+# ---- 运行时产生的文件 -------------------------------------------------
+# 日志、扫描结果、配置文件、备份都是本机状态，不该进仓库
+*.log
+hr-scan.txt
+hr-daemon.ini
+hr_plugin.ini
+*.bak
+
+# ---- 编辑器 / 系统 ----------------------------------------------------
+.vs/
+.vscode/
+.idea/
+.zcode/
+*.user
+*.suo
+Thumbs.db
+desktop.ini
+
+# ---- 编译好的二进制（要发布就直接发 Release，不进仓库）----------------
+*.exe
+*.dll
+*.tmd
+*.zip

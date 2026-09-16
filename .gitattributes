@@ -1,0 +1,26 @@
+# 统一换行符：避免在不同系统上 checkout 之后 .cmd 变成 LF 而无法执行
+# （cmd.exe 解析 LF-only 的批处理会报 "'xxx' is not recognized as an internal
+#   or external command"，且中文注释会被按错位的字节切开）
+* text=auto
+
+*.cmd  text eol=crlf
+*.bat  text eol=crlf
+*.ps1  text eol=crlf
+
+*.c     text eol=lf
+*.cpp   text eol=lf
+*.h     text eol=lf
+*.hpp   text eol=lf
+*.rs    text eol=lf
+*.toml  text eol=lf
+*.md    text eol=lf
+*.ini   text eol=lf
+Cargo.lock text eol=lf
+
+# 二进制
+*.exe  binary
+*.dll  binary
+*.tmd  binary
+*.zip  binary
+*.png  binary
+*.ico  binary
