@@ -83,7 +83,7 @@ function Resolve-TmDir([string]$explicit) {
             return $p
         }
     }
-    throw "找不到 TrafficMonitor。请用 -TmDir 指定安装目录，或先跑 hr-config set tm_dir <路径>"
+    throw "找不到 TrafficMonitor。请用 -TmDir 指定安装目录，或先跑 hr-manager set tm_dir <路径>"
 }
 
 $TmDir = Resolve-TmDir $TmDir

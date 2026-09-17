@@ -22,6 +22,7 @@
 #include <chrono>
 #include <condition_variable>
 #include <cstdio>
+#include <functional>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -108,9 +109,13 @@ bool AwaitOp(TCreate&& create, DWORD timeoutMs, T& out, const char* what, bool q
 // 收集匹配设备（同一个地址可能广播多次，保留第一次见到的名字）。
 // stop 非空时置位即可中断等待（daemon 退出要能立刻收手）。
 // stopOnFirst=true 时扫到一台就走（常驻采集只要一台，不用白等满整轮）。
+// emit 非空时，每发现一台新设备、以及某台的后到的名字补全，都会回调一次——
+// --scan 的流式输出靠它边扫边吐。
 // 返回 false 表示扫描器起不来（蓝牙关了等）。
+using ScanEmit = std::function<void(unsigned long long addr, const std::wstring& name)>;
 bool ScanCollect(int timeoutMs, std::map<unsigned long long, std::wstring>& found,
-                 const std::atomic<bool>* stop, bool stopOnFirst) {
+                 const std::atomic<bool>* stop, bool stopOnFirst,
+                 const ScanEmit& emit = {}) {
     WAdv::BluetoothLEAdvertisementWatcher watcher;
     watcher.ScanningMode(WAdv::BluetoothLEScanningMode::Active);
     watcher.AdvertisementFilter().Advertisement().ServiceUuids().Append(
@@ -122,18 +127,23 @@ bool ScanCollect(int timeoutMs, std::map<unsigned long long, std::wstring>& foun
     auto recvTok = watcher.Received(
         [&](const WAdv::BluetoothLEAdvertisementWatcher&,
             const WAdv::BluetoothLEAdvertisementReceivedEventArgs& args) {
-            std::lock_guard<std::mutex> lk(m);
             const unsigned long long a = args.BluetoothAddress();
             std::wstring n(args.Advertisement().LocalName().c_str());
-            auto it = found.find(a);
-            if (it == found.end()) {
-                found.emplace(a, n);
-            } else if (it->second.empty() && !n.empty()) {
-                it->second = n;      // 后一条广播补上了名字
-            } else {
-                return;
+            bool report = false;
+            {
+                std::lock_guard<std::mutex> lk(m);
+                auto it = found.find(a);
+                if (it == found.end()) {
+                    found.emplace(a, n);
+                    report = true;       // 新设备
+                } else if (it->second.empty() && !n.empty()) {
+                    it->second = n;      // 后一条广播补上了名字
+                    report = true;
+                }
+                if (report) cv.notify_all();   // 让等待方尽快重新判断（可能要提前收手）
             }
-            cv.notify_all();         // 让等待方尽快重新判断（可能要提前收手）
+            // 回调放在锁外：它可能往管道里写阻塞数据，别把等 cv 的扫描主循环也卡住
+            if (report && emit) emit(a, n);
         });
 
     auto stopTok = watcher.Stopped(
@@ -178,21 +188,6 @@ bool ScanCollect(int timeoutMs, std::map<unsigned long long, std::wstring>& foun
     try { watcher.Stop(); } catch (...) {}
     watcher.Received(recvTok);
     watcher.Stopped(stopTok);
-    return true;
-}
-
-// 只连第一台找到的设备（常驻采集用）
-bool ScanForDevice(int timeoutMs, unsigned long long& foundAddr, std::wstring& foundName,
-                   const std::atomic<bool>& stop) {
-    std::map<unsigned long long, std::wstring> found;
-    if (!ScanCollect(timeoutMs, found, &stop, /*stopOnFirst=*/true) || found.empty()) return false;
-
-    foundAddr = found.begin()->first;
-    foundName = found.begin()->second;
-
-    std::string desc = MacToString(foundAddr);
-    if (!foundName.empty()) { desc += " ("; desc += ToUtf8(foundName); desc += ")"; }
-    LogInfo("BLE: 发现设备 %s", desc.c_str());
     return true;
 }
 
@@ -397,36 +392,19 @@ private:
         int backoffSec = (m_cfg.backoff_min_sec < 1) ? 1 : m_cfg.backoff_min_sec;
         const int streamTimeoutMs = (m_cfg.timeout_ms < 1000) ? 1000 : m_cfg.timeout_ms;
 
+        // main 只在配了地址时才建 BLE 源（未配置 = 不连接，免得多设备环境连错表）。
+        // 这里留一道一行版的防御：万一哪天被建出来了，也别自作主张去扫描乱连。
         if (!m_cfg.haveAddress) {
-            // 正常路径走不到这里：main 在没配地址时根本不建 BLE 源（未配置=不连接，
-            // 免得多设备环境连错表）。留一道防御——万一哪天被建出来了，也绝不
-            // 自作主张扫描连接，就地待机等 Stop。
-            LogInfo("BLE: 未配置手表地址，待机（不扫描、不连接）");
-            while (!m_stop) Sleep(200);
-            LogInfo("BLE: 采集线程退出");
+            LogError("BLE: 未配置手表地址却建了 BLE 源（不该发生），采集线程退出");
             return;
         }
 
         while (!m_stop) {
             bool live = false;
             try {
-                if (m_cfg.haveAddress) {
-                    // 配置里给了地址：跳过扫描直连
-                    LogInfo("BLE: 使用配置里的地址直连（跳过扫描）");
-                    live = ConnectAndStream(m_sink, m_stop, m_cfg.address, m_cfg.nameHint,
-                                            streamTimeoutMs);
-                } else {
-                    // 走不到：无地址在函数开头就被拦下待机了（未配置=不连接）。
-                    // 这段保留是为了语义完整——真要恢复自动扫描，得先想清楚
-                    // 多设备环境下连错表的问题（见 PLAN.md 第七轮）。
-                    unsigned long long addr = 0;
-                    std::wstring       name;
-                    if (ScanForDevice(m_cfg.scan_timeout_ms, addr, name, m_stop)) {
-                        live = ConnectAndStream(m_sink, m_stop, addr, name, streamTimeoutMs);
-                    } else if (!m_stop) {
-                        LogInfo("BLE: 本轮没扫到心率广播设备（手表需停在\"心率广播\"页面并保持亮屏）");
-                    }
-                }
+                LogInfo("BLE: 使用配置里的地址直连");
+                live = ConnectAndStream(m_sink, m_stop, m_cfg.address, m_cfg.nameHint,
+                                        streamTimeoutMs);
             } catch (const winrt::hresult_error& e) {
                 LogWarn("BLE: 未处理异常 0x%08X %s",
                         (unsigned)e.code().value, Narrow(e.message()).c_str());
@@ -468,7 +446,85 @@ std::unique_ptr<HrSource> MakeBleSource(HrSink& sink, const BleConfig& cfg) {
     return std::make_unique<BleSource>(sink, cfg);
 }
 
-int BleScanToFile(int seconds, const std::wstring& outPath) {
+// ---------------------------------------------------------------- --scan 流式输出
+
+namespace {
+
+// --scan 的输出句柄，拿到一次就一直用。
+// 被 hr-manager 拉起时，stdout 是继承来的管道（STARTF_USESTDHANDLES），
+// GetStdHandle 直接拿得到；从 cmd 手动跑时是 GUI 子系统没有标准句柄，
+// 就附加到父控制台后打开 CONOUT$。两种情况都按字节写 UTF-8。
+HANDLE ScanOutHandle() {
+    static HANDLE g_out   = INVALID_HANDLE_VALUE;
+    static bool   g_tried = false;
+    if (g_tried) return g_out;
+    g_tried = true;
+
+    HANDLE h = GetStdHandle(STD_OUTPUT_HANDLE);
+    if (h && h != INVALID_HANDLE_VALUE) {
+        g_out = h;
+        return g_out;
+    }
+    if (GetConsoleWindow() == nullptr)
+        AttachConsole(ATTACH_PARENT_PROCESS);   // 没有父控制台就算了，输出丢弃
+    if (GetConsoleWindow() != nullptr) {
+        SetConsoleOutputCP(CP_UTF8);
+        g_out = CreateFileW(L"CONOUT$", GENERIC_WRITE, FILE_SHARE_WRITE,
+                            nullptr, OPEN_EXISTING, 0, nullptr);
+    }
+    return g_out;
+}
+
+bool ScanWriteLine(const std::string& utf8) {
+    HANDLE h = ScanOutHandle();
+    if (h == INVALID_HANDLE_VALUE) return false;
+    DWORD written = 0;
+    // 写失败（读者没了/管道断了）不当作错误：扫描照常跑完，退出码只反映扫描本身
+    WriteFile(h, utf8.data(), (DWORD)utf8.size(), &written, nullptr);
+    return true;
+}
+
+// 设备名里可能有引号/反斜杠/控制字符（名字来自广播数据，别信它乖）。
+// UTF-8 字节本身原样通过。
+std::string JsonEscape(const std::string& utf8) {
+    std::string out;
+    out.reserve(utf8.size() + 8);
+    for (unsigned char c : utf8) {
+        switch (c) {
+        case '"':  out += "\\\""; break;
+        case '\\': out += "\\\\"; break;
+        case '\b': out += "\\b";  break;
+        case '\f': out += "\\f";  break;
+        case '\n': out += "\\n";  break;
+        case '\r': out += "\\r";  break;
+        case '\t': out += "\\t";  break;
+        default:
+            if (c < 0x20) {
+                char buf[8];
+                snprintf(buf, sizeof(buf), "\\u%04X", c);
+                out += buf;
+            } else {
+                out += (char)c;
+            }
+        }
+    }
+    return out;
+}
+
+void ScanEmitJson(const char* type, unsigned long long addr, const std::wstring& name) {
+    std::string line = "{\"type\":\"";
+    line += type;
+    line += "\",\"mac\":\"";
+    line += ToUtf8(HrFormatMac(addr));
+    line += "\",\"name\":\"";
+    line += JsonEscape(ToUtf8(name));
+    line += "\"}\r\n";
+    ScanWriteLine(line);
+}
+
+} // namespace
+
+int BleScanStream(int seconds) {
     try {
         winrt::init_apartment(winrt::apartment_type::multi_threaded);
     } catch (const winrt::hresult_error& e) {
@@ -480,43 +536,20 @@ int BleScanToFile(int seconds, const std::wstring& outPath) {
     if (seconds > 120)  seconds = 120;
 
     std::map<unsigned long long, std::wstring> found;
-    // 一次性扫描：要列全，所以不提前收手。
-    if (!ScanCollect(seconds * 1000, found, nullptr, /*stopOnFirst=*/false)) return -1;
+    // 一次性扫描：要列全，所以不提前收手。emit 边扫边把新设备/新名字推给读者，
+    // hr-manager 的面板因此能实时刷新列表。
+    const ScanEmit emit = [](unsigned long long a, const std::wstring& n) {
+        // 消费端按 mac 去重、后到的名字覆盖前面的，所以统一用 device 类型即可
+        ScanEmitJson("device", a, n);
+    };
+    if (!ScanCollect(seconds * 1000, found, nullptr, /*stopOnFirst=*/false, emit)) return -1;
 
-    // 一行一台设备："AA:BB:CC:DD:EE:FF\t名字"（UTF-8）
-    std::string text;
-    for (const auto& kv : found) {
-        text += ToUtf8(HrFormatMac(kv.first));
-        text.push_back('\t');
-        text += ToUtf8(kv.second);
-        text += "\r\n";
+    {
+        // 收尾行借 mac 字段带设备数出去（消费端按 type 分流）
+        char buf[64];
+        snprintf(buf, sizeof(buf), "{\"type\":\"done\",\"count\":%d}\r\n", (int)found.size());
+        ScanWriteLine(buf);
     }
-
-    HANDLE h = CreateFileW(outPath.c_str(), GENERIC_WRITE, FILE_SHARE_READ, nullptr,
-                           CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
-    if (h == INVALID_HANDLE_VALUE) {
-        LogError("BLE: 无法写扫描结果 %s（错误码 %lu）", ToUtf8(outPath).c_str(), GetLastError());
-        return -1;
-    }
-    // 写完要真的检查结果：磁盘满 / 介质错误时 WriteFile 会失败，而调用方（hr-config）
-    // 只看退出码，静默"成功"会让它把"没扫到设备"报给用户。
-    const unsigned char bom[3] = { 0xEF, 0xBB, 0xBF };
-    bool writeOk = true;
-    DWORD written = 0;
-    if (!WriteFile(h, bom, 3, &written, nullptr) || written != 3) writeOk = false;
-    if (writeOk && !text.empty()) {
-        if (text.size() > 0xFFFFFFFFull) {
-            writeOk = false;
-        } else if (!WriteFile(h, text.data(), (DWORD)text.size(), &written, nullptr) ||
-                   written != (DWORD)text.size()) {
-            writeOk = false;
-        }
-    }
-    if (!writeOk)
-        LogError("BLE: 写扫描结果 %s 时出错（错误码 %lu）", ToUtf8(outPath).c_str(), GetLastError());
-    CloseHandle(h);
-    if (!writeOk) return -1;
-
-    LogInfo("BLE: 扫描结束，找到 %zu 台设备，已写入 %s", found.size(), ToUtf8(outPath).c_str());
+    LogInfo("BLE: 扫描结束，找到 %zu 台设备", found.size());
     return (int)found.size();
 }

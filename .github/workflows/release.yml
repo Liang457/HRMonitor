@@ -24,8 +24,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # hr-config 是零 crate 的纯 std Rust，--offline 不依赖网络；
-      # 只需保证 cargo 在 PATH 且够新（Cargo.lock 是 lockfile v4）
+      # hr-manager 带 GUI 栈依赖（wry/tao/tray-icon），Cargo.lock 已锁版本，
+      # CI 有网直接拉；只需保证 cargo 够新（lockfile 是 v4）
       - name: 安装 Rust 工具链
         uses: dtolnay/rust-toolchain@stable
 
@@ -47,15 +47,15 @@ jobs:
         shell: cmd
         run: chcp 65001 >nul && tools\osd_test\build.cmd
 
-      - name: 构建 hr-config（Rust）
+      - name: 构建 hr-manager（Rust + WebView2 GUI）
         shell: cmd
-        run: chcp 65001 >nul && tools\hr-config\build.cmd
+        run: chcp 65001 >nul && tools\hr-manager\build.cmd
 
-      # hr-config 的 ini_path 是 exe 同目录：fresh build\ 下无交互提示；
+      # hr-manager 的 ini_path 是 exe 同目录：fresh build\ 下 -y 免交互；
       # daemon 未运行时 reset 直接写入默认配置并正常退出
       - name: 生成示例 hr-daemon.ini
         shell: cmd
-        run: chcp 65001 >nul && build\hr-config.exe reset
+        run: chcp 65001 >nul && build\hr-manager.exe reset -y
 
       # 发行包：5 个产物 + 示例 ini + scripts 部署脚本 + 文档。
       # tag 推送用 tag 名命名，main 推送用 dev-<短SHA>
@@ -67,7 +67,7 @@ jobs:
                  else { "dev-$($env:GITHUB_SHA.Substring(0, 7))" }
           $stage = "dist/HRMonitor-$tag-win64"
           New-Item -ItemType Directory $stage | Out-Null
-          Copy-Item build/hr-daemon.exe, build/HeartRate.dll, build/hr_plugin.dll, build/hr-config.exe, build/osd_test.exe, build/hr-daemon.ini $stage/
+          Copy-Item build/hr-daemon.exe, build/HeartRate.dll, build/hr_plugin.dll, build/hr-manager.exe, build/osd_test.exe, build/hr-daemon.ini $stage/
           Copy-Item scripts $stage/scripts -Recurse
           Copy-Item LICENSE, THIRD_PARTY_NOTICES.md, README.md $stage/
           Compress-Archive $stage "dist/HRMonitor-$tag-win64.zip"

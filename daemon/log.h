@@ -21,7 +21,7 @@ void LogSetDebug(bool on);
 
 // 控制台附加的开关，必须赶在 LogInit 之前调用。默认关（cmd 手动跑 daemon 时
 // 附加到父控制台、日志同屏可见）。开了之后 LogInit 不再附加任何控制台，
-// 日志只进文件——hr-config 拉起 daemon 时用：不与配置工具共享控制台，
+// 日志只进文件——hr-manager 拉起 daemon 时用：不与配置工具共享控制台，
 // 配置窗口的 Ctrl+C / 关闭就不会把 daemon 连带杀掉，菜单也不会被日志刷屏。
 void LogSetQuiet(bool on);
 

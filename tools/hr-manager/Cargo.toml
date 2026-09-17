@@ -1,0 +1,24 @@
+[package]
+name = "hr-manager"
+version = "1.1.0"
+edition = "2021"
+description = "管理器：华为手表心率 → TrafficMonitor + Afterburner OSD（托盘 + 配置面板 + CLI）"
+license = "MIT"
+
+# GUI 栈依赖 wry(WebView2) + tao(窗口/事件循环) + tray-icon(托盘)。
+# 这是 hr-manager 专属的例外：本 crate 之外的项目部分仍然不引第三方库。
+# Cargo.lock 锁版本；首次构建需要联网拉依赖，之后可离线重建。
+
+[[bin]]
+name = "hr-manager"
+path = "src/main.rs"
+
+[dependencies]
+wry = "0.57"
+tao = "0.37"
+tray-icon = "0.25"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[profile.release]
+strip = true

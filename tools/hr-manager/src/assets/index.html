@@ -1,0 +1,470 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>华为手表心率</title>
+<style>
+  :root {
+    --bg: #12151c; --card: #1a1f2a; --card2: #202735; --line: #2b3446;
+    --text: #e8ecf3; --dim: #93a0b4; --accent: #eb405c; --accent2: #ff6b81;
+    --ok: #4cc38a; --warn: #e8b341; --bad: #e5534b;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 14px/1.6 "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+    padding: 14px 14px 30px;
+  }
+  .wrap { max-width: 560px; margin: 0 auto; }
+  header { display: flex; align-items: center; gap: 10px; margin: 4px 2px 14px; }
+  header .heart { width: 22px; height: 22px; fill: var(--accent); }
+  header h1 { font-size: 17px; margin: 0; font-weight: 600; flex: 1; }
+  .badge { font-size: 12px; padding: 2px 10px; border-radius: 20px; border: 1px solid var(--line); color: var(--dim); }
+  .badge.on { color: var(--ok); border-color: var(--ok); }
+
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; margin-bottom: 14px; }
+  .card h2 { margin: 0 0 10px; font-size: 13px; color: var(--dim); font-weight: 600; letter-spacing: .05em; }
+
+  /* 状态卡 */
+  .hrbox { display: flex; align-items: baseline; gap: 10px; }
+  .bpm { font-size: 56px; font-weight: 700; font-variant-numeric: tabular-nums; line-height: 1.1; }
+  .bpm small { font-size: 15px; color: var(--dim); font-weight: 400; margin-left: 4px; }
+  .bpm.live { color: var(--accent2); }
+  .stext { color: var(--dim); font-size: 13px; }
+  .stext b { color: var(--text); font-weight: 600; }
+
+  /* 按钮 */
+  button {
+    background: var(--card2); color: var(--text); border: 1px solid var(--line);
+    border-radius: 8px; padding: 6px 14px; font-size: 13px; cursor: pointer;
+  }
+  button:hover { border-color: var(--accent); }
+  button:disabled { opacity: .45; cursor: default; }
+  button.primary { background: var(--accent); border-color: var(--accent); }
+  button.primary:hover { background: var(--accent2); }
+  button.danger { color: var(--bad); border-color: var(--bad); }
+  .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+
+  /* 配置表单 */
+  .fields { display: grid; grid-template-columns: 1fr; gap: 9px; }
+  .f { display: grid; grid-template-columns: 150px 1fr; gap: 10px; align-items: center; }
+  .f label { color: var(--dim); font-size: 13px; }
+  .f label i { font-style: normal; display: block; color: #5b6b82; font-size: 11px; }
+  .f input[type=text], .f input[type=number] {
+    background: var(--bg); border: 1px solid var(--line); color: var(--text);
+    border-radius: 7px; padding: 6px 9px; font-size: 13px; width: 100%;
+  }
+  .f input:focus { outline: none; border-color: var(--accent); }
+  .switch { position: relative; width: 40px; height: 22px; flex: none; }
+  .switch input { opacity: 0; width: 0; height: 0; }
+  .switch span { position: absolute; inset: 0; background: var(--line); border-radius: 22px; transition: .15s; cursor: pointer; }
+  .switch span::before { content: ""; position: absolute; width: 16px; height: 16px; left: 3px; top: 3px; border-radius: 50%; background: var(--dim); transition: .15s; }
+  .switch input:checked + span { background: var(--accent); }
+  .switch input:checked + span::before { transform: translateX(18px); background: #fff; }
+  .err { color: var(--bad); font-size: 12px; }
+  .link { color: var(--accent2); cursor: pointer; text-decoration: underline; font-size: 12px; }
+
+  /* 扫描 */
+  .hint { color: var(--dim); font-size: 12px; margin: 6px 0 10px; }
+  .slist { margin-top: 10px; display: flex; flex-direction: column; gap: 6px; }
+  .dev { display: flex; gap: 10px; align-items: center; background: var(--card2); border: 1px solid var(--line); border-radius: 8px; padding: 7px 11px; cursor: pointer; }
+  .dev:hover { border-color: var(--accent); }
+  .dev .mac { font-family: Consolas, monospace; font-size: 12.5px; }
+  .dev .nm { color: var(--dim); font-size: 12.5px; flex: 1; }
+  .dev.cur { border-color: var(--ok); }
+  .dev.cur .tag { color: var(--ok); font-size: 11px; }
+  .sstatus { color: var(--warn); font-size: 12.5px; min-height: 18px; margin-top: 8px; }
+
+  /* 高级 */
+  .banner { background: #3a2b18; border: 1px solid #6b5320; color: #ffd58a; border-radius: 8px; padding: 8px 12px; font-size: 12.5px; margin-bottom: 10px; }
+  .chk { display: flex; align-items: center; gap: 8px; font-size: 13px; }
+  .chk input { accent-color: var(--accent); width: 15px; height: 15px; }
+  pre.out {
+    background: var(--bg); border: 1px solid var(--line); border-radius: 8px;
+    padding: 8px 10px; font-size: 11.5px; max-height: 160px; overflow: auto;
+    white-space: pre-wrap; word-break: break-all; margin: 10px 0 0; color: var(--dim);
+    display: none;
+  }
+  footer { color: #56657e; font-size: 11px; text-align: center; margin-top: 6px; }
+
+  /* toast */
+  #toasts { position: fixed; top: 14px; left: 50%; transform: translateX(-50%); display: flex; flex-direction: column; gap: 8px; z-index: 9; width: min(520px, 92%); }
+  .toast { background: var(--card2); border: 1px solid var(--accent); border-radius: 8px; padding: 8px 14px; font-size: 13px; box-shadow: 0 6px 18px rgba(0,0,0,.4); }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <svg class="heart" viewBox="0 0 32 32"><path d="M16 29C9 23 2 17.5 2 10.8 2 6 5.6 3 9.6 3c2.6 0 5 1.3 6.4 3.6C17.4 4.3 19.8 3 22.4 3 26.4 3 30 6 30 10.8c0 6.7-7 12.2-14 18.2z"/></svg>
+    <h1>华为手表心率</h1>
+    <span class="badge" id="daemonBadge">daemon 检测中…</span>
+  </header>
+
+  <!-- 实时状态 -->
+  <div class="card">
+    <div class="hrbox">
+      <div class="bpm" id="bpm">--</div>
+      <div class="stext" id="stext">正在连接管理器…</div>
+    </div>
+  </div>
+
+  <!-- 选表扫描 -->
+  <div class="card" id="scanCard">
+    <h2>选择手表</h2>
+    <div class="hint">
+      手表需停在<b>“心率广播”</b>页面并保持亮屏。若 daemon 正连着手表，扫描会<b>先自动停掉它</b>，
+      扫完选定后自动恢复。
+    </div>
+    <div class="row">
+      <button class="primary" id="btnScan">开始扫描（10 秒）</button>
+      <button id="btnScanCancel" hidden>取消</button>
+      <button id="btnScanDiscard" hidden>放弃选择，恢复采集</button>
+    </div>
+    <div class="sstatus" id="scanStatus"></div>
+    <div class="slist" id="scanList"></div>
+  </div>
+
+  <!-- 配置 -->
+  <div class="card">
+    <h2>配置 <span class="link" id="lnkScanForAddr" style="float:right">选表改 address</span></h2>
+    <div class="fields" id="fields"></div>
+    <div class="err" id="formErr" style="margin-top:8px"></div>
+    <div class="row" style="margin-top:12px">
+      <button id="btnSave">保存</button>
+      <button class="primary" id="btnSaveRestart">保存并重启 daemon</button>
+      <button class="danger" id="btnReset">恢复默认</button>
+    </div>
+  </div>
+
+  <!-- daemon 控制 -->
+  <div class="card">
+    <h2>采集进程（hr-daemon）</h2>
+    <div class="row">
+      <button id="btnStart">启动</button>
+      <button id="btnStop">停止</button>
+      <button id="btnRestart">重启</button>
+      <button id="btnLogs">打开日志文件夹</button>
+    </div>
+  </div>
+
+  <!-- 高级 -->
+  <div class="card">
+    <h2>高级</h2>
+    <div class="banner" id="oldTaskBanner" hidden>
+      检测到旧版计划任务 HuaweiHRDaemon（会开机直接拉起 daemon）。建议运行
+      <b>scripts\uninstall-task.ps1</b> 清掉，改用本面板的“开机自启”。
+    </div>
+    <div class="chk" style="margin-bottom:12px">
+      <label class="switch"><input type="checkbox" id="chkAutostart"><span></span></label>
+      开机自启（登录后只出托盘，不弹面板）
+    </div>
+    <h2 style="margin-top:4px">第三方程序部署（需要先构建好对应 DLL）</h2>
+    <div class="row" style="margin-top:6px">
+      <button id="btnTm">配置 TrafficMonitor</button>
+      <button id="btnTmAdmin" title="目录写不动时用这个（弹 UAC）">管理员…</button>
+      <button id="btnAb">部署 Afterburner 插件</button>
+      <button id="btnAbAdmin" title="目录写不动时用这个（弹 UAC）">管理员…</button>
+    </div>
+    <pre class="out" id="scriptOut"></pre>
+  </div>
+
+  <footer id="paths">hr-manager</footer>
+</div>
+<div id="toasts"></div>
+
+<script>
+"use strict";
+// ---------------------------------------------------------------- IPC 桥
+window.__hr = {
+  _seq: 0,
+  _pending: {},
+  recv(m) {                       // Rust 回应（按 id 配对）
+    const p = this._pending[m.id];
+    if (p) { delete this._pending[m.id]; p(m.payload); }
+  },
+  call(cmd, params) {
+    return new Promise((resolve) => {
+      const id = ++this._seq;
+      this._pending[id] = resolve;
+      window.ipc.postMessage(JSON.stringify(Object.assign({ id: id, cmd: cmd }, params || {})));
+    });
+  },
+  status(s) { renderStatus(s); },
+  scanEvent(e) { renderScanEvent(e); },
+  toast(msg) { showToast(msg); }
+};
+
+// ---------------------------------------------------------------- 工具
+function $(id) { return document.getElementById(id); }
+function esc(s) {
+  return String(s).replace(/[&<>"]/g, function (c) {
+    return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c];
+  });
+}
+function toast(msg) { showToast(msg); }
+function showToast(msg) {
+  const t = document.createElement("div");
+  t.className = "toast";
+  t.textContent = msg;
+  $("toasts").appendChild(t);
+  setTimeout(function () { t.remove(); }, 4000);
+}
+
+// ---------------------------------------------------------------- 状态卡
+const STATUS_TEXT = {
+  ok: "采集中",
+  connecting: "连接中 / 重连退避",
+  timeout: "数据超时",
+  nodata: "无数据（未配置手表或还没连上）",
+  off: "hr-daemon 未运行"
+};
+function renderStatus(s) {
+  const bpmEl = $("bpm");
+  if (s.bpm >= 0) {
+    bpmEl.innerHTML = s.bpm + "<small>bpm</small>";
+    bpmEl.classList.add("live");
+  } else {
+    bpmEl.textContent = "--";
+    bpmEl.classList.remove("live");
+  }
+  let txt = STATUS_TEXT[s.status] || s.status;
+  if (s.device) txt = "<b>" + esc(s.device) + "</b> · " + txt;
+  if (s.ageSec > 3 && s.bpm >= 0) txt += "（" + s.ageSec + " 秒前更新）";
+  $("stext").innerHTML = txt;
+  const badge = $("daemonBadge");
+  if (s.daemon) { badge.textContent = "daemon 运行中"; badge.classList.add("on"); }
+  else { badge.textContent = "daemon 未运行"; badge.classList.remove("on"); }
+  $("btnStart").disabled = s.daemon;
+  $("btnStop").disabled = !s.daemon;
+}
+
+// ---------------------------------------------------------------- 扫描
+let scanning = false;
+function renderScanEvent(e) {
+  const st = $("scanStatus");
+  if (e.type === "stopping") { st.textContent = "正在停止 hr-daemon（手表连着时不广播）…"; }
+  else if (e.type === "waiting") { st.textContent = "已停止，等 2 秒让手表恢复广播…"; }
+  else if (e.type === "device") { upsertDevice(e.mac, e.name); st.textContent = "扫描中…（已发现 " + deviceCount() + " 台）"; }
+  else if (e.type === "done") {
+    scanning = false;
+    $("btnScan").disabled = false;
+    $("btnScanCancel").hidden = true;
+    st.textContent = "扫描完成，共 " + e.count + " 台。点一台选定；不想选就点“放弃选择”。";
+    $("btnScanDiscard").hidden = false;
+  }
+}
+function deviceCount() { return $("scanList").children.length; }
+function upsertDevice(mac, name) {
+  const list = $("scanList");
+  let row = null;
+  for (const d of list.children) {
+    if (d.dataset.mac === mac) { row = d; break; }
+  }
+  if (!row) {
+    row = document.createElement("div");
+    row.className = "dev";
+    row.dataset.mac = mac;
+    row.innerHTML = '<span class="mac"></span><span class="nm"></span><span class="tag"></span>';
+    row.onclick = function () { pickDevice(mac); };
+    list.appendChild(row);
+  }
+  row.children[0].textContent = mac;
+  row.children[1].textContent = name || "（无名字）";
+  if (row.dataset.mac === currentAddress) row.children[2].textContent = "← 当前";
+}
+function resetScanUi() {
+  $("scanList").innerHTML = "";
+  $("scanStatus").textContent = "";
+  $("btnScanDiscard").hidden = true;
+  $("btnScanCancel").hidden = true;
+  $("btnScan").disabled = false;
+  scanning = false;
+}
+function pickDevice(mac) {
+  if (!confirm("把手表设为 " + mac + "？\n会保存配置并重启 hr-daemon。")) return;
+  $("btnScan").disabled = true;
+  __hr.call("apply_address", { mac: mac }).then(function (r) {
+    resetScanUi();
+    $("btnScan").disabled = false;
+    if (r.ok) { toast(r.message || "已保存"); currentAddress = mac; }
+    else toast("失败：" + (r.error || "未知错误"));
+    refreshMeta();
+  });
+}
+
+// ---------------------------------------------------------------- 配置表单
+const FIELDS = [
+  { key: "demo",         kind: "bool",  desc: "模拟心率源",              sub: "不用手表，60~180 随机游走" },
+  { key: "address",      kind: "text",  desc: "手表 MAC",                sub: "留空 = 不连接" },
+  { key: "scan_timeout", kind: "number",desc: "每轮扫描最长",            sub: "毫秒，--scan 默认时长" },
+  { key: "backoff_min",  kind: "number",desc: "重连退避下限",            sub: "秒" },
+  { key: "backoff_max",  kind: "number",desc: "重连退避上限",            sub: "秒，≥ 下限" },
+  { key: "timeout",      kind: "number",desc: "多久没数据显示 --",       sub: "毫秒" },
+  { key: "refresh",      kind: "number",desc: "刷新/采样周期",           sub: "毫秒" },
+  { key: "log_kb",       kind: "number",desc: "日志文件上限",            sub: "KB，写满轮转" },
+  { key: "debug",        kind: "bool",  desc: "日志打印每条心率",        sub: "排查用，平时别开" },
+  { key: "tm_dir",       kind: "text",  desc: "TrafficMonitor 目录",     sub: "部署脚本自动探测用" }
+];
+let currentAddress = "";
+
+function buildForm() {
+  const box = $("fields");
+  for (const f of FIELDS) {
+    const row = document.createElement("div");
+    row.className = "f";
+    if (f.kind === "bool") {
+      row.innerHTML =
+        '<label>' + f.desc + '<i>' + f.sub + '</i></label>' +
+        '<label class="switch"><input type="checkbox" data-key="' + f.key + '"><span></span></label>';
+    } else {
+      row.innerHTML =
+        '<label>' + f.desc + '<i>' + f.sub + '</i></label>' +
+        '<input type="' + f.kind + '" data-key="' + f.key + '">';
+    }
+    box.appendChild(row);
+  }
+}
+function fillForm(cfg) {
+  for (const el of $("fields").querySelectorAll("[data-key]")) {
+    const v = cfg[el.dataset.key] || "";
+    if (el.type === "checkbox") el.checked = v === "1";
+    else el.value = v;
+    if (el.dataset.key === "address") currentAddress = v;
+  }
+  // 当前列表里标"当前"
+  for (const d of $("scanList").children) {
+    d.children[2].textContent = d.dataset.mac === currentAddress ? "← 当前" : "";
+    d.classList.toggle("cur", d.dataset.mac === currentAddress);
+  }
+}
+function collectForm() {
+  const values = {};
+  const errs = [];
+  for (const el of $("fields").querySelectorAll("[data-key]")) {
+    const v = el.type === "checkbox" ? (el.checked ? "1" : "0") : el.value;
+    values[el.dataset.key] = v;
+  }
+  return values;
+}
+function saveForm() {
+  $("formErr").textContent = "";
+  return __hr.call("set_config", { values: collectForm() }).then(function (r) {
+    if (!r.ok) {
+      $("formErr").textContent = r.error || "保存失败";
+      toast("配置没保存：" + (r.error || "有非法值"));
+    } else {
+      toast("配置已保存");
+    }
+    return r.ok;
+  });
+}
+
+// ---------------------------------------------------------------- 元信息
+function refreshMeta() {
+  __hr.call("get_config").then(function (r) {
+    if (!r.ok) { toast("读配置失败：" + (r.error || "")); return; }
+    fillForm(r.config);
+    $("chkAutostart").checked = !!r.autostart;
+    $("oldTaskBanner").hidden = !r.oldTask;
+    $("paths").textContent = "配置：" + r.iniPath + (r.iniExists ? "" : "（不存在，用默认值）") + " · daemon：" + r.daemonExe;
+  });
+}
+
+// ---------------------------------------------------------------- 事件绑定
+function bind() {
+  $("btnScan").onclick = function () {
+    if (scanning) return;
+    resetScanUi();
+    scanning = true;
+    $("btnScan").disabled = true;
+    $("btnScanCancel").hidden = false;
+    $("scanStatus").textContent = "准备扫描…";
+    __hr.call("scan_start", { secs: 10 }).then(function (r) {
+      if (!r.ok) {
+        resetScanUi();
+        $("scanStatus").textContent = "";
+        toast("扫描没跑起来：" + (r.error || ""));
+      } else if (r.cancelled) {
+        $("scanStatus").textContent = "已取消，采集已恢复。";
+      }
+    });
+  };
+  $("btnScanCancel").onclick = function () {
+    $("btnScanCancel").disabled = true;
+    __hr.call("scan_cancel").then(function () { $("btnScanCancel").disabled = false; });
+    $("scanStatus").textContent = "取消中…";
+  };
+  $("btnScanDiscard").onclick = function () {
+    __hr.call("scan_discard").then(function () {
+      resetScanUi();
+      $("scanStatus").textContent = "已放弃，采集恢复。";
+    });
+  };
+
+  $("btnSave").onclick = function () { saveForm(); };
+  $("btnSaveRestart").onclick = function () {
+    saveForm().then(function (ok) {
+      if (ok) __hr.call("restart_daemon").then(function (r) {
+        toast(r.ok ? (r.message || "已重启") : "重启失败：" + r.error);
+      });
+    });
+  };
+  $("btnReset").onclick = function () {
+    if (!confirm("用默认值覆盖整个 hr-daemon.ini？")) return;
+    __hr.call("reset_config").then(function (r) {
+      if (r.ok) { toast("已恢复默认配置（重启 daemon 后生效）"); refreshMeta(); }
+      else toast("失败：" + r.error);
+    });
+  };
+
+  $("btnStart").onclick = function () { __hr.call("start_daemon").then(function (r) { toast(r.ok ? r.message : r.error); }); };
+  $("btnStop").onclick = function () { __hr.call("stop_daemon").then(function (r) { toast(r.ok ? r.message : r.error); }); };
+  $("btnRestart").onclick = function () { __hr.call("restart_daemon").then(function (r) { toast(r.ok ? r.message : r.error); }); };
+  $("btnLogs").onclick = function () { __hr.call("open_logs"); };
+
+  $("chkAutostart").onchange = function () {
+    __hr.call("autostart_set", { enabled: $("chkAutostart").checked }).then(function (r) {
+      if (!r.ok) { $("chkAutostart").checked = !$("chkAutostart").checked; toast("失败：" + r.error); }
+    });
+  };
+
+  const scriptBtn = function (btnId, which) {
+    $(btnId).onclick = function () {
+      if (!confirm("要修改第三方程序的配置文件，脚本会先关掉对应程序再改，完成前别手动打开它。继续？")) return;
+      $(btnId).disabled = true;
+      const out = $("scriptOut");
+      out.style.display = "block";
+      out.textContent = "运行中…";
+      __hr.call("run_script", { which: which }).then(function (r) {
+        $(btnId).disabled = false;
+        if (r.ok) { out.textContent = "✔ 完成\n" + (r.output || ""); toast("部署完成，详见输出"); }
+        else { out.textContent = "✘ 失败（退出码 " + r.code + "）\n" + (r.output || r.error || ""); toast("部署失败，详见输出（目录写不动可试“管理员…”）"); }
+      });
+    };
+  };
+  scriptBtn("btnTm", "tm");
+  scriptBtn("btnAb", "ab");
+  const scriptBtnAdmin = function (btnId, which) {
+    $(btnId).onclick = function () {
+      if (!confirm("以管理员身份运行部署脚本（弹 UAC，窗口独立显示）？")) return;
+      __hr.call("run_script_elevated", { which: which }).then(function (r) {
+        if (!r.ok) toast(r.error || "提权失败");
+      });
+    };
+  };
+  scriptBtnAdmin("btnTmAdmin", "tm");
+  scriptBtnAdmin("btnAbAdmin", "ab");
+
+  $("lnkScanForAddr").onclick = function () {
+    $("scanCard").scrollIntoView({ behavior: "smooth" });
+  };
+}
+
+// ---------------------------------------------------------------- 启动
+buildForm();
+bind();
+refreshMeta();
+</script>
+</body>
+</html>

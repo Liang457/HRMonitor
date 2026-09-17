@@ -1,6 +1,8 @@
 # scripts/uninstall-task.ps1
-# 撤销 install-task.ps1 做的一切（计划任务 + 启动文件夹快捷方式），
-# 不动 hr-daemon.exe 本身，也不会去杀正在跑的 daemon。
+# 清理旧版的开机自启（计划任务 + 启动文件夹快捷方式）。
+# 新版自启走注册表 Run 键（hr-manager 面板里的"开机自启"开关管理），
+# 不再用计划任务——这个脚本保留给老用户迁移时清理。
+# 不动 hr-daemon.exe / hr-manager.exe 本身，也不杀正在跑的进程。
 #
 #     powershell -ExecutionPolicy Bypass -File scripts\uninstall-task.ps1
 

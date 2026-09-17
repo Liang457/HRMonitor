@@ -308,8 +308,8 @@ std::string HrConfig::ToIniText() const {
     // 定长缓冲区一旦不够就会被 _TRUNCATE 静默截断，写出一份缺尾段的 INI，
     // 而读的那边宽容解析 → 丢掉的键全变默认值，很难查。
     const char* fmt =
-        "; hr-daemon.ini —— hr-daemon / hr-config 的配置\r\n"
-        "; 这个文件由 hr-config.exe 生成，也可以手改（UTF-8）。改完重启 hr-daemon 生效。\r\n"
+        "; hr-daemon.ini —— hr-daemon / hr-manager 的配置\r\n"
+        "; 这个文件由 hr-manager.exe 生成，也可以手改（UTF-8）。改完重启 hr-daemon 生效。\r\n"
         "; 以 ; 或 # 开头的行是注释。\r\n"
         "; OSD 的外观（颜色/字号/量程/是否显示）不在这个文件里配 ——\r\n"
         "; 那归 MSI Afterburner 的监控设置管，见 README。\r\n"
@@ -338,7 +338,7 @@ std::string HrConfig::ToIniText() const {
         "debug=%d\r\n"
         "\r\n"
         "[integration]\r\n"
-        "; TrafficMonitor 安装目录（只给 hr-config.exe 用）\r\n"
+        "; TrafficMonitor 安装目录（只给 hr-manager.exe 用）\r\n"
         "tm_dir=%s\r\n";
 
     const int need = _scprintf(fmt,

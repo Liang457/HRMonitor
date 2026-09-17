@@ -52,37 +52,30 @@ impl Default for Config {
     }
 }
 
-/// 一个可编辑项的元信息：CLI 键名 + 说明 + 取值方式
+/// 一个可编辑项的元信息：键名 + 说明。（取值方式/控件类型由面板的 JS 表负责，
+/// 那边维护着自己的同名清单。）
 pub struct Field {
     pub key: &'static str,
     pub desc: &'static str,
     pub unit: &'static str,
-    pub kind: Kind,
 }
 
-#[derive(Clone, Copy, PartialEq)]
-pub enum Kind {
-    Bool,
-    Int,
-    Text,
-}
-
-/// 界面上能改的所有项。顺序就是菜单顺序。
+/// 面板/CLI 里能改的所有项。顺序就是展示顺序。
 pub const FIELDS: &[Field] = &[
-    Field { key: "demo",         desc: "模拟心率源（不用手表）",       unit: "",      kind: Kind::Bool },
-    Field { key: "address",      desc: "直连的手表 MAC（留空=不连接）", unit: "",      kind: Kind::Text },
-    Field { key: "scan_timeout", desc: "每轮扫描最长",                 unit: "毫秒",  kind: Kind::Int },
-    Field { key: "backoff_min",  desc: "重连退避下限",                 unit: "秒",    kind: Kind::Int },
-    Field { key: "backoff_max",  desc: "重连退避上限",                 unit: "秒",    kind: Kind::Int },
-    Field { key: "timeout",      desc: "多久没数据就显示 --",          unit: "毫秒",  kind: Kind::Int },
-    Field { key: "refresh",      desc: "刷新/采样周期",                unit: "毫秒",  kind: Kind::Int },
-    Field { key: "log_kb",       desc: "日志文件上限",                 unit: "KB",    kind: Kind::Int },
-    Field { key: "debug",        desc: "日志打印每条心率（排查用）",   unit: "",      kind: Kind::Bool },
-    Field { key: "tm_dir",       desc: "TrafficMonitor 安装目录",      unit: "",      kind: Kind::Text },
+    Field { key: "demo",         desc: "模拟心率源（不用手表）",       unit: "" },
+    Field { key: "address",      desc: "直连的手表 MAC（留空=不连接）", unit: "" },
+    Field { key: "scan_timeout", desc: "每轮扫描最长",                 unit: "毫秒" },
+    Field { key: "backoff_min",  desc: "重连退避下限",                 unit: "秒" },
+    Field { key: "backoff_max",  desc: "重连退避上限",                 unit: "秒" },
+    Field { key: "timeout",      desc: "多久没数据就显示 --",          unit: "毫秒" },
+    Field { key: "refresh",      desc: "刷新/采样周期",                unit: "毫秒" },
+    Field { key: "log_kb",       desc: "日志文件上限",                 unit: "KB" },
+    Field { key: "debug",        desc: "日志打印每条心率（排查用）",   unit: "" },
+    Field { key: "tm_dir",       desc: "TrafficMonitor 安装目录",      unit: "" },
 ];
 
 impl Config {
-    /// 读一项（返回用于显示/编辑的字符串）
+    /// 读一项（给人看的字符串：布尔显示 是/否）
     pub fn get(&self, key: &str) -> Option<String> {
         Some(match key {
             "demo" => yn(self.demo),
@@ -96,6 +89,15 @@ impl Config {
             "debug" => yn(self.log_debug),
             "tm_dir" => self.tm_dir.clone(),
             _ => return None,
+        })
+    }
+
+    /// 读一项（给表单/脚本的机器字符串：布尔是 1/0）
+    pub fn get_raw(&self, key: &str) -> Option<String> {
+        Some(match key {
+            "demo" => b01(self.demo).to_string(),
+            "debug" => b01(self.log_debug).to_string(),
+            _ => return self.get(key),
         })
     }
 
@@ -141,8 +143,8 @@ impl Config {
         let mut s = String::new();
         let _ = write!(
             s,
-            "; hr-daemon.ini —— hr-daemon / hr-config 的配置\r\n\
-             ; 这个文件由 hr-config.exe 生成，也可以手改（UTF-8）。改完重启 hr-daemon 生效。\r\n\
+            "; hr-daemon.ini —— hr-daemon / hr-manager 的配置\r\n\
+             ; 这个文件由 hr-manager.exe 生成，也可以手改（UTF-8）。改完重启 hr-daemon 生效。\r\n\
              ; 以 ; 或 # 开头的行是注释。\r\n\
              ; OSD 的外观（颜色/字号/量程/是否显示）不在这个文件里配 ——\r\n\
              ; 那归 MSI Afterburner 的监控设置管，见 README。\r\n\
@@ -152,7 +154,7 @@ impl Config {
              demo={}\r\n\
              ; 留空 = 不连接（避免连错设备，手表地址必须明确指定）；填了 = 直连该地址\r\n\
              address={}\r\n\
-             ; 每轮扫描最长多少毫秒\r\n\
+             ; --scan 不带秒数参数时的默认扫描时长\r\n\
              scan_timeout_ms={}\r\n\
              ; 失败后重连退避，从 min 秒开始翻倍到 max 秒封顶\r\n\
              backoff_min_sec={}\r\n\
@@ -171,7 +173,7 @@ impl Config {
              debug={}\r\n\
              \r\n\
              [integration]\r\n\
-             ; TrafficMonitor 安装目录（只给 hr-config.exe 用）\r\n\
+             ; TrafficMonitor 安装目录（只给 hr-manager 的部署按钮/脚本用）\r\n\
              tm_dir={}\r\n",
             b01(self.demo),
             self.address,
@@ -308,7 +310,7 @@ pub fn normalize_mac(s: &str) -> Result<String, String> {
 ///
 /// `Ok(None)` 只表示"文件不存在"。读不了、解不出来一律 Err —— 以前所有失败都
 /// 塌缩成 None，上层当成"用默认值"，于是文件暂时读不到（被编辑器锁着、被同步
-/// 客户端或杀软占着、存成了 UTF-16）时菜单显示默认值，用户随便改一项保存，
+/// 客户端或杀软占着、存成了 UTF-16）时面板显示默认值，用户随便改一项保存，
 /// 就用默认值把真实配置整个覆盖掉了。
 pub fn read_ini(path: &Path) -> Result<Option<String>, String> {
     let bytes = match std::fs::read(path) {
@@ -328,7 +330,7 @@ pub fn read_ini(path: &Path) -> Result<Option<String>, String> {
 
     String::from_utf8(bytes).map(Some).map_err(|_| {
         format!(
-            "{} 既不是 UTF-8 也不是 UTF-16 —— 请存成 UTF-8，或删掉它让 hr-config 重建",
+            "{} 既不是 UTF-8 也不是 UTF-16 —— 请存成 UTF-8，或删掉它让 hr-manager 重建",
             path.display()
         )
     })
@@ -399,8 +401,7 @@ fn replace_file(from: &Path, to: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
-/// hr-config.exe 所在目录。结果缓存：以前每次调用都要分配并清零 64 KB，
-/// 而 cmd_path 一处就会调三次。
+/// hr-manager.exe 所在目录。结果缓存：每次读写 ini 都要用，别反复分配。
 pub fn exe_dir() -> PathBuf {
     static CACHE: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
     CACHE
@@ -431,6 +432,24 @@ fn exe_dir_uncached() -> Option<PathBuf> {
 
 pub fn ini_path() -> PathBuf {
     exe_dir().join("hr-daemon.ini")
+}
+
+// ---------------------------------------------------------------- 载入/保存（CLI 与 GUI 共用）
+
+/// 读配置 + 路径。`Err` 表示"文件在、但读不了或解不出来"，这跟"文件不存在"
+/// 是两回事：读不出来时绝不能退回默认值 —— 用户下一次保存就会用默认值把
+/// 真实配置覆盖掉。
+pub fn load() -> Result<(Config, PathBuf, bool), String> {
+    let path = ini_path();
+    match read_ini(&path)? {
+        Some(text) => Ok((Config::from_ini_text(&text), path, true)),
+        None => Ok((Config::default(), path, false)),
+    }
+}
+
+/// 保存（备份 + 原子替换）。
+pub fn save(cfg: &Config, path: &Path) -> Result<(), String> {
+    write_ini(path, &cfg.to_ini_text())
 }
 
 use crate::win;

@@ -6,7 +6,7 @@
 // daemon 自己不画任何东西，OSD 的呈现完全归 Afterburner 管。
 //
 // GUI 子系统静默运行；从 cmd 启动时会附加到父控制台，日志同时写文件；
-// --quiet（hr-config 拉起时用）则不附加任何控制台，日志只进文件。
+// --quiet（hr-manager 拉起时用）则不附加任何控制台，日志只进文件。
 #include <windows.h>
 #include <shellapi.h>
 
@@ -17,14 +17,13 @@
 #include <vector>
 
 #include "../common/hr_config.h"
+#include "../common/hr_names.h"
 #include "../common/hr_shared.h"
 #include "hr_source.h"
 #include "log.h"
 
 namespace {
 
-constexpr wchar_t  kMutexName[] = L"Local\\HuaWeiHR_daemon";
-constexpr wchar_t  kWndClass[]  = L"HuaWeiHRDaemonWnd";
 constexpr UINT_PTR kTimerId     = 1;
 constexpr UINT     kTimerMs     = 100;    // 主循环节拍（分辨率；出数据按配置的 refresh_ms）
 
@@ -34,10 +33,9 @@ struct Options {
     unsigned long long address     = 0;
     bool               help        = false;
     bool               debug       = false;   // --debug：连每条心率都写进日志
-    bool               scan        = false;   // --scan：只扫描设备，写文件后退出
-    int                scanSec     = 10;
-    std::wstring       scanOut;
-    bool               quiet       = false;   // --quiet：不附加控制台，日志只写文件（hr-config 拉起时用）
+    bool               scan        = false;   // --scan：只扫描设备，按行输出 JSON 后退出
+    int                scanSec     = 0;       // 0 = 未在命令行给出，用配置里的 scan_timeout_ms
+    bool               quiet       = false;   // --quiet：不附加控制台，日志只写文件（hr-manager 拉起时用）
 };
 
 // ---------------------------------------------------------------- 全局状态
@@ -127,7 +125,7 @@ void Tick() {
         // 文件刷爆了。想看到每一条就打开 log.debug（或 --debug）。
         if (out >= 0) LogDebug("心率: %d bpm", out);
         else if (g_unconfigured)
-            LogInfo("心率: -- （未配置手表地址，不连接；用 hr-config 第 2 项选表）");
+            LogInfo("心率: -- （未配置手表地址，不连接；请在 hr-manager 面板里扫描选表）");
         else          LogInfo("心率: -- （%s）",
                               status == HRS_TIMEOUT     ? "数据超时" :
                               status == HRS_CONNECTING  ? "连接中"   : "无数据");
@@ -190,12 +188,14 @@ void PrintUsage() {
     LogInfo("  hr-daemon.exe --address AA:BB:CC:DD:EE:FF");
     LogInfo("                             直连指定手表");
     LogInfo("  hr-daemon.exe --debug      连每条心率都写进日志（平时不写）");
-    LogInfo("  hr-daemon.exe --quiet      不附加控制台，日志只写文件（hr-config 拉起时用）");
+    LogInfo("  hr-daemon.exe --quiet      不附加控制台，日志只写文件（hr-manager 拉起时用）");
     LogInfo("  hr-daemon.exe --help       显示本帮助");
     LogInfo("");
-    LogInfo("  hr-daemon.exe --scan [秒数] [--out 文件]");
-    LogInfo("                             只扫描附近的心率广播设备，结果写成");
-    LogInfo("                             \"MAC<TAB>名字\" 每行一台，然后退出（给 hr-config 用）");
+    LogInfo("  hr-daemon.exe --scan [秒数]");
+    LogInfo("                             只扫描附近的心率广播设备，边扫边往 stdout");
+    LogInfo("                             按行输出 JSON（{\"type\":\"device\",...}），");
+    LogInfo("                             最后一行 {\"type\":\"done\",...}，然后退出");
+    LogInfo("                             （给 hr-manager 的选表面板用）");
     LogInfo("");
     LogInfo("配置: %s（不存在则用默认值，可改）", ToUtf8(HrDaemonIniPath()).c_str());
     LogInfo("日志: exe 同目录 hr-daemon.log（写完即刷盘，可边跑边看）。");
@@ -208,9 +208,9 @@ void PrintUsage() {
 
 int Run(HINSTANCE hInst, const Options& opt) {
     // ---- 单实例
-    HANDLE mutex = CreateMutexW(nullptr, TRUE, kMutexName);
+    HANDLE mutex = CreateMutexW(nullptr, TRUE, HR_MUTEX_DAEMON);
     if (mutex && GetLastError() == ERROR_ALREADY_EXISTS) {
-        LogWarn("已经有一个 hr-daemon 在运行（互斥体 %s），本次启动退出", ToUtf8(kMutexName).c_str());
+        LogWarn("已经有一个 hr-daemon 在运行（互斥体 %s），本次启动退出", ToUtf8(HR_MUTEX_DAEMON).c_str());
         CloseHandle(mutex);
         return 0;
     }
@@ -220,14 +220,14 @@ int Run(HINSTANCE hInst, const Options& opt) {
     wc.cbSize        = sizeof(wc);
     wc.lpfnWndProc   = WndProc;
     wc.hInstance     = hInst;
-    wc.lpszClassName = kWndClass;
+    wc.lpszClassName = HR_WNDCLASS_DAEMON;
     if (!RegisterClassExW(&wc) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS) {
         LogError("RegisterClassExW 失败 err=%lu", GetLastError());
         return 1;
     }
     // 不调用 ShowWindow —— 窗口始终不可见，但仍是顶层窗口，
     // 因此 taskkill（不带 /F）和系统注销都能送 WM_CLOSE 进来。
-    g_hwnd = CreateWindowExW(0, kWndClass, L"hr-daemon", WS_OVERLAPPED,
+    g_hwnd = CreateWindowExW(0, HR_WNDCLASS_DAEMON, L"hr-daemon", WS_OVERLAPPED,
                              0, 0, 0, 0, nullptr, nullptr, hInst, nullptr);
     if (!g_hwnd) {
         LogError("CreateWindowExW 失败 err=%lu", GetLastError());
@@ -279,8 +279,8 @@ int Run(HINSTANCE hInst, const Options& opt) {
         } else {
             // 旧行为是扫描并连第一台 0x180D 设备——多设备环境下会连错表，而且
             // 一旦连上手表就停止广播，想换表都不好扫。现在地址留空就保持断开，
-            // 让用户用 hr-config 明确选表（--scan 一次性扫描仍然保留给选表用）。
-            LogInfo("模式: 未配置手表地址，不连接（避免连错设备）；请用 hr-config 第 2 项选表");
+            // 让用户在 hr-manager 的面板里明确选表（--scan 一次性扫描就是给它用的）。
+            LogInfo("模式: 未配置手表地址，不连接（避免连错设备）；请在 hr-manager 面板里扫描选表");
             g_unconfigured = true;   // Tick 的状态行据此显示“未配置手表地址”
         }
     }
@@ -346,9 +346,6 @@ Options ParseArgs(int argc, wchar_t** argv, std::vector<std::string>& warns) {
                 long sec = wcstol(argv[i + 1], &end, 10);
                 if (end && *end == L'\0' && sec > 0) { o.scanSec = (int)sec; ++i; }
             }
-        } else if (a == L"--out") {
-            if (i + 1 >= argc) { warn("--out 后面缺少文件路径"); continue; }
-            o.scanOut = argv[++i];
         } else {
             warn("忽略未知参数 \"%s\"", ToUtf8(a).c_str());
         }
@@ -390,13 +387,17 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, PWSTR, int) {
 
     if (opt.help) { PrintUsage(); LogShutdown(); return 0; }
 
-    // ---- --scan：只扫设备，把结果写成文件后退出（给 hr-config.exe 用）
+    // ---- --scan：只扫设备，按行往 stdout 输出 JSON 后退出（给 hr-manager 用）。
+    // 没在命令行给秒数时用配置里的 scan_timeout_ms——这个键以前只喂给走不到的
+    // 自动扫描分支，现在它至少管着扫描的默认时长，不再是死配置。
     if (opt.scan) {
-        const std::wstring out = opt.scanOut.empty()
-                               ? HrJoinPath(HrExeDir(), L"hr-scan.txt")
-                               : opt.scanOut;
-        LogInfo("扫描模式: 扫 %d 秒，结果写入 %s", opt.scanSec, ToUtf8(out).c_str());
-        const int n = BleScanToFile(opt.scanSec, out);
+        int secs = opt.scanSec;
+        if (secs <= 0)
+            secs = g_cfg.scan_timeout_ms / 1000;
+        if (secs < 1)    secs = 1;
+        if (secs > 120)  secs = 120;
+        LogInfo("扫描模式: 扫 %d 秒，结果按行输出到 stdout", secs);
+        const int n = BleScanStream(secs);
         if (n < 0) LogError("扫描失败（蓝牙适配器不可用？）");
         LogShutdown();
         return n < 0 ? 1 : 0;

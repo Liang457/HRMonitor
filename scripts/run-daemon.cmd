@@ -8,7 +8,7 @@ rem daemon exits -- that is intentional for a foreground/debug run.
 rem
 rem To run it detached instead, use one of:
 rem   start "" build\hr-daemon.exe            (in a new window)
-rem   powershell scripts\install-task.ps1     (auto-start at logon)
+rem   hr-manager.exe (tray) or its Run-key autostart  (auto-start at logon)
 rem
 rem Usage:
 rem   run-daemon.cmd                                    scan for the watch and connect

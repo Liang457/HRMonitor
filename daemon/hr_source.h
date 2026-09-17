@@ -79,7 +79,10 @@ struct BleConfig {
 };
 std::unique_ptr<HrSource> MakeBleSource(HrSink& sink, const BleConfig& cfg);
 
-// 扫描-only 模式（供 hr-config.exe 枚举设备用）：
-// 扫 seconds 秒，把每个设备写成一行 "<MAC>\t<名字>"（UTF-8）到 outPath，
-// 返回发现的设备数；-1 表示扫描起不来。
-int BleScanToFile(int seconds, const std::wstring& outPath);
+// 扫描-only 模式（供 hr-manager 的选表面板用）：
+// 扫 seconds 秒，边扫边往 stdout 按行输出 JSON（UTF-8）：
+//   {"type":"device","mac":"AA:BB:CC:DD:EE:FF","name":"手表名"}   每发现一台 / 补全名字一条
+//   {"type":"done","count":N}                                    收尾
+// 消费端按 mac 去重，后到的名字覆盖前面的。输出写不进去（管道断了/没有
+// 控制台）不当作错误，扫描照常跑完。返回发现的设备数；-1 表示扫描起不来。
+int BleScanStream(int seconds);

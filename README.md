@@ -4,21 +4,26 @@
 再送到两个显示端：MSI Afterburner 的游戏内 OSD，和 TrafficMonitor 的任务栏。
 
 ```
-手表（心率广播） ──BLE──▶ hr-daemon.exe ──▶ Local\HuaWeiHR_SM（64 字节共享内存）
-                              │                      │
-                         配置：hr-daemon.ini     ┌────┴────┐
-                         (hr-config.exe 改)  HeartRate.dll  hr_plugin.dll
-                                             (x86，Afterburner) (x64，任务栏)
+                                     ┌─▶ HeartRate.dll (x86，Afterburner OSD)
+手表（心率广播） ──BLE──▶ hr-daemon.exe ──┼─▶ hr_plugin.dll (x64，任务栏)
+                 连接/重连/扫描      │    └─▶ hr-manager.exe (托盘 + 配置面板)
+                                     └─ 写 Local\HuaWeiHR_SM（64 字节共享内存）
+                                        配置：hr-daemon.ini（hr-manager 读写）
 ```
 
-daemon 只负责采集和写共享内存，两个显示端各自去读，互不依赖：Afterburner 没开
-不影响任务栏，TrafficMonitor 没开也不影响 OSD。
+daemon 只负责采集（蓝牙全在它这边：连接/重连/扫描）和写共享内存，读端各自去读、
+互不依赖：Afterburner 没开不影响任务栏，TrafficMonitor 没开也不影响 OSD，
+hr-manager 没开采集照跑。
+
+`hr-manager.exe` 是管理器：托盘常驻，配置面板（WebView2 渲染的 HTML 单页）按需
+弹出、关闭即整体销毁（内存回落）；带 CLI 子命令给脚本用。开机自启、选表扫描、
+重启采集、第三方部署入口都在它身上。
 
 第三方依赖方面，BLE 走 Windows SDK 自带的 C++/WinRT（链接 `windowsapp.lib`），
-两个插件只依赖 `kernel32`，配置工具是纯 std 的 Rust，一个 crate 都没有。
+两个插件只依赖 `kernel32`；hr-manager 的 GUI 栈（wry + tao + tray-icon）是全仓库
+唯一的第三方 crate，其余 Rust 代码全部手写 WinAPI 声明。
 
-设计文档和实现期间的取舍记在 [PLAN.md](PLAN.md)，第三方组件的授权情况见
-[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
+第三方组件的授权情况见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
 
 ## 功能
 
@@ -26,8 +31,9 @@ daemon 只负责采集和写共享内存，两个显示端各自去读，互不�
   断开或超时会自动重连，退避从 1 秒翻倍到 30 秒
 - **两个显示端**：Afterburner 里是一条名为 `Heart rate` 的原生监控数据源
   （bpm），TrafficMonitor 里是任务栏上的一项 `HR 128`
-- **配置工具**：`hr-config.exe` 改 `hr-daemon.ini`，改地址时会先扫一遍设备列出来
-  让你挑，不用手抄 MAC
+- **管理器 hr-manager**：托盘常驻 + HTML 配置面板——实时心率大字显示、
+  点一下扫描选表（自动停/启 daemon）、改配置、开关机自启、调部署脚本；
+  同一个 exe 带完整 CLI 子命令（给脚本/CI）
 - **模拟源**：`demo=1` 时用心率随机游走代替手表，构建完不用有表也能验通整条链路
 - **设备区分**：数据源按 MAC 直连或自动挑选，切换手表只改一行配置
 
@@ -35,7 +41,6 @@ daemon 只负责采集和写共享内存，两个显示端各自去读，互不�
 
 ```
 HRMonitor\
-├─ PLAN.md                     设计文档（含实现期间的修正与验收记录）
 ├─ README.md
 ├─ LICENSE                     本仓库自己的代码：MIT
 ├─ THIRD_PARTY_NOTICES.md      第三方组件授权说明
@@ -46,26 +51,30 @@ HRMonitor\
 ├─ ab-plugin\                  HeartRate.dll（C++，x86）：Afterburner 监控数据源
 ├─ tm-plugin\                  hr_plugin.dll（C++，x64）：TrafficMonitor 插件
 ├─ tools\
-│  ├─ hr-config\               hr-config.exe（Rust）：配置工具
+│  ├─ hr-manager\              hr-manager.exe（Rust + wry）：托盘/配置面板/CLI
 │  ├─ mahm-probe\              读 Afterburner 共享内存的小脚本，排查用
 │  └─ osd_test\                osd_test.exe（C++）：D3D11 清屏窗口，验证 OSD 用
-├─ scripts\                    开机自启 / TrafficMonitor / Afterburner 部署脚本
+├─ scripts\                    TrafficMonitor / Afterburner 部署脚本 + 旧自启清理
 └─ build\                      构建产物（不入库）
 ```
 
 ## 构建
 
 需要 MSVC（VS 2019/2022/2026 的 Build Tools 都行，勾上 C++ 生成工具，**并且要包含
-x86 目标**），以及 Rust 工具链（只有配置工具需要，[rustup.rs](https://rustup.rs)
+x86 目标**），以及 Rust 工具链（只有 hr-manager 需要，[rustup.rs](https://rustup.rs)
 默认选项即可）。
 
 ```cmd
-cmd /c daemon\build.cmd          :: -> build\hr-daemon.exe   (C++, x64)
-cmd /c ab-plugin\build.cmd       :: -> build\HeartRate.dll   (C++, x86, 需要 x86 工具集)
-cmd /c tm-plugin\build.cmd       :: -> build\hr_plugin.dll   (C++, x64)
-cmd /c tools\osd_test\build.cmd  :: -> build\osd_test.exe    (C++, x64)
-cmd /c tools\hr-config\build.cmd :: -> build\hr-config.exe   (Rust, 不需要 MSVC)
+cmd /c daemon\build.cmd           :: -> build\hr-daemon.exe   (C++, x64)
+cmd /c ab-plugin\build.cmd        :: -> build\HeartRate.dll   (C++, x86, 需要 x86 工具集)
+cmd /c tm-plugin\build.cmd        :: -> build\hr_plugin.dll   (C++, x64)
+cmd /c tools\osd_test\build.cmd   :: -> build\osd_test.exe    (C++, x64)
+cmd /c tools\hr-manager\build.cmd :: -> build\hr-manager.exe  (Rust + WebView2 GUI)
 ```
+
+hr-manager 首次构建需要联网拉依赖（wry/tao/tray-icon，Cargo.lock 已锁版本），
+之后可离线重建；仓库里其余部分构建不依赖网络。面板用 WebView2 运行时渲染
+（Win10/11 系统自带，Evergreen），无需额外安装。
 
 各 `.cmd` 都用 `vswhere` 自动找 MSVC，不绑死 VS 版本或安装路径。C++ 产物都是
 `/MT` 静态 CRT，目标机器不用装 VC++ 运行库。
@@ -88,77 +97,49 @@ main 都会构建全部产物（zip 在对应运行页面的 Artifacts 里下载
 ## 配置
 
 配置全在 `hr-daemon.ini`，和 `hr-daemon.exe` 同目录，UTF-8、带注释，可以直接手改。
-`hr-config.exe` 只做两件事：改这个文件，以及可选地重启 daemon 让改动生效。它不读
-共享内存、不扫设备、不动 TrafficMonitor，也不管 OSD。
+改配置的日常入口是 **hr-manager 的面板**（托盘图标 → 打开面板）：实时心率大字、
+扫描选表、全部配置项、启停 daemon、开机自启、部署脚本按钮都在一页里。
+
+不想动 GUI 也可以用同一个 exe 的 CLI 子命令（GUI 是主交互，CLI 给脚本兜底）：
 
 ```cmd
-build\hr-config.exe                 :: 交互式菜单（不带参数时），逐项改
-build\hr-config.exe show            :: 列出当前配置
-build\hr-config.exe set demo 1      :: 改一项
-build\hr-config.exe reset           :: 恢复默认
-build\hr-config.exe restart         :: 重启 hr-daemon
-build\hr-config.exe path            :: 显示各文件位置
-build\hr-config.exe help            :: 全部命令
+build\hr-manager.exe show            :: 列出当前配置
+build\hr-manager.exe get demo        :: 读一项
+build\hr-manager.exe set demo 1      :: 改一项（只写文件，重启后生效）
+build\hr-manager.exe reset [-y]      :: 恢复默认
+build\hr-manager.exe status          :: daemon 状态 + 共享内存实时值
+build\hr-manager.exe start / stop    :: 启动 / 停止 daemon
+build\hr-manager.exe restart         :: 重启 daemon 让改动生效
+build\hr-manager.exe scan [秒数]     :: 扫描附近的心率广播设备
+build\hr-manager.exe path            :: 显示各文件位置
+build\hr-manager.exe help            :: 全部命令
+build\hr-manager.exe                 :: 不带参数 = 打开面板（--minimized 只出托盘）
 ```
 
-不带参数进交互菜单，直接回车保持原值，输入编号改对应项：
+保存时会先把原文件备份成 `hr-daemon.ini.bak`，再写临时文件、原子替换，写到一半不会
+留下半份配置。如果 `hr-daemon.ini` 存在但读不出来（被编辑器锁着、存成了别的编码），
+hr-manager 会直接报错退出，**不会**退回默认值——否则你下一次保存就会用默认值把真实
+配置覆盖掉。
 
-```
- 1) demo          模拟心率源（不用手表）          = 否
- 2) address       直连的手表 MAC（留空=不连接）    = (空，不连接)
- ...
- 9) debug         日志打印每条心率（排查用）      = 否
- 10) tm_dir       TrafficMonitor 安装目录        = (空)
-
-   s) 保存并退出     r) 保存 + 重启 daemon     q) 放弃退出
-选择>
-```
-
-值填错会当场告诉你哪里不对，不会写进文件。保存时会先把原文件备份成
-`hr-daemon.ini.bak`，再写临时文件、原子替换，写到一半不会留下半份配置。
-如果 `hr-daemon.ini` 存在但读不出来（被编辑器锁着、存成了别的编码），
-`hr-config` 会直接报错退出，**不会**退回默认值——否则你下一次保存就会用默认值
-把真实配置覆盖掉。
-
-**改 `address`（第 2 项）时会先扫一遍附近的心率广播设备，列出来让你挑**：
-
-```
-  直连的手表 MAC（留空=不连接）（address）
-  正在扫描心率广播设备（5 秒）… 手表请停在"心率广播"页面并保持亮屏。
-  扫到 2 台：
-    1) AA:BB:CC:DD:EE:FF   HUAWEI WATCH GT 4   ← 当前
-    2) C8:1F:66:0A:11:22   （无名字）
-     0) 重新扫描
-  当前 [AA:BB:CC:DD:EE:FF]，回车保持，- 清空，也可以直接输入 MAC
-选择 >
-```
-
-输入编号选中那台，`0` 重新扫描，回车保持原值，`-` 清空（daemon 将不连接），直接敲
-MAC 也照样认。扫描是借 `hr-daemon.exe --scan` 做的，hr-config 自己不碰蓝牙。
-
-手表**被 daemon 连着的时候通常就不再广播了**，所以 daemon 正在跑时菜单会先问一句
-"先停掉它再扫描？"（答 y 就停掉、等 2 秒让手表恢复广播、扫完选完再把 daemon 拉起来）。
-拉起时**直接用你刚选的地址临时直连**（命令行参数优先于 ini），选完马上就能看到数据；
-地址要按 `s`/`r` 保存重启后才写进 ini。扫描固定 5 秒，赶时间的设备可能漏掉，扫不到
-就按 `0` 再扫一次。
-
-顺带一提：hr-config 拉起 daemon 时都带 `--quiet`，daemon 不附加配置窗口的控制台——
-日志不会刷进菜单（看 `hr-daemon.log`），在这个窗口按 Ctrl+C 或直接关窗口也不会把
-daemon 连带杀掉。
+**扫描选表**（面板"选择手表"卡片，或 CLI `hr-manager scan`）：手表需停在**"心率广播"
+页面并保持亮屏**。手表**被 daemon 连着的时候通常就不再广播了**，所以扫描会自动先停掉
+daemon、等 2 秒让手表恢复广播，扫完选定后自动保存并重启 daemon；不选就点"放弃"恢复
+采集。扫描边扫边刷新列表（10 秒），赶时间的设备可能漏掉，扫不到就再扫一次。扫描是借
+`hr-daemon.exe --scan` 做的（daemon 是唯一的蓝牙入口），hr-manager 自己不碰蓝牙。
 
 ### hr-daemon.ini
 
 | 键 | 默认 | 说明 |
 |---|---|---|
 | `demo` | 否 | 换成模拟心率源（60~180 随机游走），不需要手表 |
-| `address` | 空 | 直连的手表 MAC；**留空则不连接**——daemon 不会自己扫一台连上（多设备环境会连错表），必须用 hr-config 选表或手填明确指定 |
-| `scan_timeout_ms` | 20000 | 预留。daemon 常驻时已不自行扫描（`--scan` 的时长由命令行参数给定），此键暂不起作用 |
+| `address` | 空 | 直连的手表 MAC；**留空则不连接**——daemon 不会自己扫一台连上（多设备环境会连错表），必须用 hr-manager 选表或手填明确指定 |
+| `scan_timeout_ms` | 20000 | `--scan` 不带秒数参数时的默认扫描时长（毫秒） |
 | `backoff_min_sec` / `backoff_max_sec` | 1 / 30 | 重连退避的上下限 |
 | `timeout_ms` | 15000 | 多久没数据就显示 `--`（毫秒） |
 | `refresh_ms` | 1000 | 采样/推送周期（毫秒） |
 | `max_kb` | 4096 | 单个日志文件的上限（KB），写满就轮转 |
 | `debug` | 否 | `是` = 连每条心率都写进日志（排查用，平时别开） |
-| `tm_dir` | 空 | TrafficMonitor 安装目录（给部署脚本用） |
+| `tm_dir` | 空 | TrafficMonitor 安装目录（面板的部署按钮会传给脚本） |
 
 `timeout_ms` 是同一个数被三处使用：daemon 判超时、BLE 层判定连接失效（超过这么久
 没收到通知就断开重连）、插件在 daemon 消失时的兜底。
@@ -169,7 +150,7 @@ daemon 连带杀掉。
 
 **心率值默认不写进日志**：手表心率几乎每秒都在变，全写下来一天能涨好几 MB。平时
 日志里只有状态变化（连上/断开/超时）和错误。想看每条心率就把 `debug` 打开
-（`hr-config set debug 1` + 重启，或直接 `hr-daemon.exe --demo --debug` 跑前台），
+（`hr-manager set debug 1` + 重启，或直接 `hr-daemon.exe --demo --debug` 跑前台），
 这些行带 `[DEBG]` 标记，方便事后过滤。
 
 ### hr_plugin.ini
@@ -190,8 +171,8 @@ timeout_ms=15000  ; daemon 挂掉时插件自己的兜底超时
 
 ```cmd
 :: 1. 换成模拟心率源并重启 daemon
-build\hr-config.exe set demo 1
-build\hr-config.exe restart
+build\hr-manager.exe set demo 1
+build\hr-manager.exe restart
 
 :: 2. 看数据到底出去没有（不需要 GUI，也不需要 RTSS）
 pwsh -File tools\mahm-probe\mahm-probe.ps1 -Filter Heart
@@ -216,23 +197,23 @@ MAHM 约定的"当前没有数据"。
 2. 在运动健康里开启**心率广播**（不同机型路径略有差异，一般在设备 → 健康监测/心率
    里；有些机型是锻炼界面里的"广播心率"）。
 3. 手表停在**心率广播页面并保持亮屏**，离开该页面广播就停了。
-4. 选定手表并起 daemon。跑 `build\hr-config.exe` 进菜单，第 2 项扫描选出你的手表
-   （选完它会自动用该地址把 daemon 临时拉起，回菜单按 `r` 保存并重启）；或者命令行
-   一把梭（MAC 可先用 `--scan` 确认，见下）：
+4. 选定手表并起 daemon。双击 `build\hr-manager.exe` 打开面板，点**开始扫描**选出你的
+   手表（会自动停启 daemon、保存并重启）；或者命令行一把梭（MAC 可先用 `scan` 确认，
+   见下）：
 
 ```cmd
-build\hr-config.exe set demo 0
-build\hr-config.exe set address AA:BB:CC:DD:EE:FF
-build\hr-config.exe restart
+build\hr-manager.exe set demo 0
+build\hr-manager.exe set address AA:BB:CC:DD:EE:FF
+build\hr-manager.exe restart
 ```
 
 日志里出现 `模式: 直连配置里的地址 ...` → `BLE: 已连接 ...，已订阅心率通知` 就成了。
 **地址留空 daemon 不会连接**（它不会自己扫一台连上，避免连错设备），任务栏和 OSD 会
 一直显示 `--`，日志里提示"未配置手表地址"。
 
-想先确认广播在线，可以用 `build\hr-daemon.exe --scan 10`：它会扫 10 秒，把每个设备
-的 `MAC<TAB>名字` 写进 `build\hr-scan.txt`，然后退出。华为手表在广播里常常不带名字，
-所以列表里那台只有 MAC 显示成"（无名字）"，认 MAC 就行。
+想先确认广播在线，可以用 `build\hr-manager.exe scan 10`：扫 10 秒，边扫边把发现的
+设备打到屏幕上。华为手表在广播里常常不带名字，列表里那台会先显示"（还没拿到名字）"，
+认 MAC 就行。
 
 ## TrafficMonitor（任务栏）
 
@@ -311,27 +292,20 @@ RTSS 只在自己 hook 到的 3D 程序上画 OSD，所以要确认 OSD 真的�
 
 ## 开机自启
 
-```powershell
-powershell -ExecutionPolicy Bypass -File scripts\install-task.ps1            # 按 ini 跑（ini 没配地址则不连接）
-powershell -ExecutionPolicy Bypass -File scripts\install-task.ps1 -Demo      # 模拟源
-powershell -ExecutionPolicy Bypass -File scripts\install-task.ps1 -Address AA:BB:CC:DD:EE:FF
-powershell -ExecutionPolicy Bypass -File scripts\uninstall-task.ps1          # 卸载
-```
+面板里勾上**"开机自启"**即可（或托盘右键菜单里开关）。原理是往注册表
+`HKCU\Software\Microsoft\Windows\CurrentVersion\Run` 写一个值
+（`HuaWeiHRManager` → `"…\hr-manager.exe" --minimized`）：
 
-脚本先试计划任务，权限不够就自动退到启动文件夹快捷方式（同样能登录自启，且不需要
-管理员）。覆盖已存在的计划任务要加 `-Force`，注册失败时脚本会把原来的任务恢复回去。
+- 不需要管理员，不需要计划任务；
+- 登录后 manager 只出托盘不弹面板，并按 ini 拉起/看护 daemon；
+- daemon 与插件天然同在一个登录会话，共享内存 `Local\` 命名空间一定对；
+- manager 退出不连带杀 daemon，采集不中断。
 
-**计划任务要跑在当前登录会话里**，不要选"不管用户是否登录都运行"。那样 daemon 会在
-会话 0，而两个插件都在会话 1，`Local\` 命名空间不同，插件读不到共享内存，任务栏和
-OSD 都会一直显示 `--`。
+旧版本用计划任务（`HuaweiHRDaemon`）自启，已废弃；面板检测到残留会提示，
+清理跑 `powershell -ExecutionPolicy Bypass -File scripts\uninstall-task.ps1`。
 
-`-Address` / `-Demo` 是写进任务参数的，而 daemon 的规则是**命令行参数优先于
-`hr-daemon.ini`**。所以这样装出来的自启实例不受 ini 里 `source.address` /
-`source.demo` 影响，而 `hr-config restart` 是不带参数启动的，两者行为会不一样。
-想只靠 ini 控制就别传这两个开关。
-
-注意 daemon 现在**地址留空就不连接**：想让自启实例真正连上表，要么装的时候传
-`-Address`，要么先用 hr-config 选表保存（把 `source.address` 写进 ini）再装。
+daemon 现在**地址留空就不连接**：想让开机后真正连上表，先用 hr-manager 选表保存
+（把 `source.address` 写进 ini）即可，自启实例读的就是同一份 ini。
 
 ## hr-daemon 命令行参数
 
@@ -340,11 +314,11 @@ hr-daemon.exe                        读 hr-daemon.ini，按配置采集
 hr-daemon.exe --demo                 强制用模拟心率源（覆盖配置）
 hr-daemon.exe --address AA:BB:CC:DD:EE:FF
                                      强制直连指定手表（覆盖配置）
-hr-daemon.exe --scan [秒数] [--out 文件]
-                                     只扫描附近的心率广播设备，结果写成
-                                     "MAC<TAB>名字" 每行一台后退出
+hr-daemon.exe --scan [秒数]
+                                     只扫描附近的心率广播设备，边扫边往 stdout
+                                     按行输出 JSON（device/done），扫完退出
 hr-daemon.exe --debug                连每条心率都写进日志
-hr-daemon.exe --quiet                不附加控制台，日志只写文件（hr-config 拉起时用）
+hr-daemon.exe --quiet                不附加控制台，日志只写文件（hr-manager 拉起时用）
 hr-daemon.exe --help
 ```
 
@@ -352,8 +326,8 @@ hr-daemon.exe --help
 （`taskkill` 不带 `/F`、Ctrl+C、注销、关机）会关掉共享内存映射；正在扫描时也能立刻
 收手，不会卡在扫描循环里。
 
-`hr-config` 拉起 / restart 出来的 daemon 都带 `--quiet`：不附加任何控制台，日志只进
-文件，配置窗口的 Ctrl+C / 关闭不会把它连带杀掉。从 cmd 手动跑则保持原行为：附加父
+`hr-manager` 拉起 / restart 出来的 daemon 都带 `--quiet`：不附加任何控制台，日志只进
+文件，面板关开、manager 退出都不会连带杀掉它。从 cmd 手动跑则保持原行为：附加父
 控制台、日志同屏，可 Ctrl+C 退出。
 
 ## 排查
@@ -364,7 +338,7 @@ hr-daemon.exe --help
 
 | 现象 | 排查 |
 |---|---|
-| OSD 和任务栏都是 `--`，日志"未配置手表地址，不连接" | 还没选表：`hr-config` 第 2 项扫描选表（或 `set address <MAC>`），再重启 daemon |
+| OSD 和任务栏都是 `--`，日志"未配置手表地址，不连接" | 还没选表：hr-manager 面板扫描选表（或 `set address <MAC>` + `restart`） |
 | 日志反复 "BLE: N 秒后重试" / "找不到设备 …" | 手表没停在心率广播页面 / 没亮屏 / 太远 / 被手机连走。用 `hr-daemon.exe --scan 10` 确认广播在线 |
 | 日志 "无法启动扫描 …（蓝牙适配器关了？）" | 电脑蓝牙关了，或适配器被禁用 |
 | 日志 "未找到心率服务 0x180D" | 连上了但没有心率服务，手表那边没真正开始广播 |
@@ -374,7 +348,7 @@ hr-daemon.exe --help
 | 曲线一直在动，但 OSD 上不显示 | 该项属性里 `Show in On-Screen Display` 没勾；或前台不是 3D 程序（用 `build\osd_test.exe` 当画布）；或 RTSS 没在跑 |
 | 值一直是 `--`，但任务栏正常 | daemon 和 Afterburner 不在同一个会话（见"开机自启"）。用 `tools\mahm-probe\mahm-probe.ps1` 看 MAHM 里那条到底是 `FLT_MAX` 还是有值，能立刻区分"插件没数据"和"OSD 没配" |
 | 任务栏没有 `HR` 项 | 见 "TrafficMonitor" 一节 |
-| `hr-config` 报"既不是 UTF-8 也不是 UTF-16" | 配置文件被存成了别的编码，用记事本另存为 UTF-8，或删掉它让 hr-config 重建 |
+| `hr-manager` 报"既不是 UTF-8 也不是 UTF-16" | 配置文件被存成了别的编码，用记事本另存为 UTF-8，或删掉它让 hr-manager 重建 |
 | 中文乱码 | 只在自编译时可能发生：源码是无 BOM UTF-8，各 `build.cmd` 必须带 `/utf-8` |
 
 Afterburner 通常以管理员身份运行（实测普通权限连 `taskkill` 都关不掉它）。这不影响
@@ -387,7 +361,7 @@ Afterburner 通常以管理员身份运行（实测普通权限连 `taskkill` �
   长测。协议按标准 BLE HR Profile 实现（flags bit0 决定 bpm 是 uint8 还是 uint16
   小端），"直连不存在地址会优雅失败并退避"已验证。
 - 只暴露一条数据源（`Heart rate`，bpm）。电量（`0x180F`）、RR 间期、连接状态、
-  PMDP 数据源、桌面常驻 overlay、Rust 重写 daemon：明确不做，留二期。
+  PMDP 数据源、桌面常驻 overlay：明确不做，留二期。
 - 数据超过 `timeout_ms` 没更新即视为超时，两处都显示 `--`；插件对 Afterburner 报的是
   MAHM 约定的 `FLT_MAX`（"当前无数据"），界面上显示成什么由 Afterburner 决定。
 - 曲线长度不是本项目的参数：Afterburner 自己按 `MonitoringDataBufferSize`（默认 3600

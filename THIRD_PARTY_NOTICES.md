@@ -87,5 +87,5 @@ Afterburner 自己不会画覆盖层，它把 OSD 文本交给 RTSS，由 RTSS �
 | `hr-daemon.exe` | Windows SDK 的 C++/WinRT 头 + `windowsapp.lib`（BLE）；仅写中立共享内存 |
 | `HeartRate.dll`（Afterburner 插件） | **仅 `kernel32`**（`/MT` 静态 CRT）。实测 `dumpbin /dependents` 只有 KERNEL32.dll |
 | `hr_plugin.dll`（TrafficMonitor 插件） | 仅 `kernel32`（`/MT` 静态 CRT） |
-| `hr-config.exe` | Rust 标准库，**零 crate**（Windows API 手写 `extern "system"` 声明） |
+| `hr-manager.exe` | GUI 栈依赖第三方 crate：`wry`（WebView2 绑定）+ `tao` + `tray-icon` + `serde`/`serde_json`，均为 MIT/Apache-2.0 双许可，版本由 `tools/hr-manager/Cargo.lock` 锁定；其余部分（配置/进程/注册表/共享内存）只用 Rust 标准库 + 手写 `extern "system"` 声明 |
 | `osd_test.exe` | 系统自带的 `d3d11` / `dxgi`（只是个 D3D11 画布，用来验证 OSD） |

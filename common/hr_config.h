@@ -1,10 +1,10 @@
 // common/hr_config.h
-// 配置与公共工具：hr-daemon.exe / hr-config.exe / hr_plugin.dll 共用。
+// 配置与公共工具：hr-daemon.exe / hr-manager.exe / hr_plugin.dll 共用。
 //
 // 配置分两份：
-//   hr-daemon.ini  与 hr-daemon.exe（和 hr-config.exe）同目录，管采集/显示/日志
+//   hr-daemon.ini  与 hr-daemon.exe（和 hr-manager.exe）同目录，管采集/显示/日志
 //   hr_plugin.ini  与 hr_plugin.dll 同目录（即 TrafficMonitor 的 plugins\ 下），
-//                  只放插件自己的显示文本。hr-config.exe 会一并写它。
+//                  只放插件自己的显示文本。hr-manager.exe 会一并写它。
 //
 // OSD 的外观（颜色/字号/量程/是否显示）**不在这里**：那归 MSI Afterburner
 // 的监控设置管，见 README 与 ab-plugin/。
@@ -81,7 +81,7 @@ struct HrConfig {
     int  log_max_kb = 4096;                  // 单个日志文件的上限，写满就轮转
     bool log_debug  = false;                 // 连每条心率都写进日志（排查用）
 
-    // ---- [integration] 只给 hr-config.exe 用
+    // ---- [integration] 只给 hr-manager.exe 用
     std::wstring tm_dir;                     // TrafficMonitor 安装目录
 
     // 文件缺失/读失败 → 返回一份默认配置（不报错）。

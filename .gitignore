@@ -4,7 +4,7 @@ daemon/obj/
 tm-plugin/obj/
 ab-plugin/obj/
 tools/osd_test/obj/
-tools/hr-config/target/
+tools/hr-manager/target/
 
 # 中间文件一律不进仓库
 *.obj
