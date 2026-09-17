@@ -22,6 +22,9 @@
 # source.address/source.demo 的影响，而 `hr-config restart` 是不带参数启动的，
 # 两者行为会不一样。想只靠 ini 控制，就别传这两个开关。
 #
+# 注意：daemon 现在**地址留空就不连接**（避免连错设备）。想让自启实例真正连上表，
+# 要么传 -Address，要么先用 hr-config 把 source.address 写进 ini 再装。
+#
 # 卸载：powershell -ExecutionPolicy Bypass -File scripts\uninstall-task.ps1
 
 [CmdletBinding()]

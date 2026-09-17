@@ -706,3 +706,49 @@ daemon 早就有 `--scan <秒> [--out 文件]`（`daemon/main.cpp` 的 scan 分�
 - Afterburner 的 `deploy-afterburner-plugin.ps1` 只做了语法检查：真正跑它要关掉正在
   运行的 Afterburner 并改它的 profile 与插件目录，没在验收里执行。
 - 日志"每行刷盘"是刻意设计（崩溃/被杀时也能看到最后一行），本轮没改。
+
+## 17. 第七轮：无地址不连接 + 配置工具隔离 daemon 控制台（2026-09-17）
+
+第一次真机联调（华为手表实机，广播/连接/订阅/设备名全部打通，见 17.4）时暴露了两个
+问题，加上一条主动的行为收紧：
+
+### 17.1 无地址 = 不连接（防连错设备）
+
+- 旧行为：`source.address` 留空时 daemon 扫描并连**第一台** 0x180D 广播设备。多设备
+  环境会连错表；而且一旦连上，手表就停止广播（§14.3），想换表都不好扫。
+- 新行为：留空（或 ini 里的地址不是合法 MAC）就**不创建数据源、不碰蓝牙**，共享内存
+  持续写 `bpm=-1 + HRS_NODATA`（两个插件显示 `--`，tooltip"无数据"，协议零改动、
+  不升 HRSM_VERSION），日志提示"未配置手表地址，不连接"。选表走 hr-config 第 2 项
+  （`--scan` 一次性模式原样保留）或手填 MAC。
+- `ble.cpp` 运行循环里那段"无地址就扫第一台"保留但已不可达（函数开头拦截待机），
+  注释写明是刻意保留——将来要恢复自动扫描，得先解决连错表问题。
+- 连带修正：`Run()` 无源时不再调 `g_source->Start()`（旧代码源恒非空，没判空）。
+- `scan_timeout_ms` 因此暂时没有生效路径：键和菜单项保留，模板注释与 README 标注
+  "预留"。
+
+### 17.2 --quiet：hr-config 拉起的 daemon 不再共享控制台
+
+- 现象一（真机联调实测）：选完表后 daemon 的日志（"BLE: 发现设备…"等）直接刷进
+  hr-config 的菜单。这是 §10.5 的设计（GUI 子系统 + AttachConsole 同屏），
+  §14.3 列为已知限制。
+- 现象二：共享控制台意味着 hr-config 窗口的 Ctrl+C / 关闭会以 CTRL_C_EVENT /
+  CTRL_CLOSE_EVENT 连带杀掉 daemon——与"配置操作不让 daemon 停摆"（§14）相反。
+- 修法：daemon 新增 `--quiet`（`LogSetQuiet`，`LogInit` 跳过 AttachConsole 和
+  CONOUT$），hr-config 的两条拉起路径（edit_address 预览、restart_daemon）都带上。
+  从 cmd 手动跑 daemon 不带它，交互行为（同屏日志、Ctrl+C 退出）不变。
+- 取舍：配置窗口里看不到 daemon 实时日志了，调试看 `hr-daemon.log` / 开 debug。
+
+### 17.3 预览拉起带上刚选的地址
+
+- 旧行为：edit_address 选完设备后立刻把 daemon 拉起来"预览"，但零参数 + 旧 ini
+  （保存要等 s/r），预览实例实际跑在扫描模式——单设备碰巧连对，多设备会连错；日志
+  "模式: 扫描心率广播设备"也让人以为刚选的地址没生效。
+- 新行为：拉起参数带 `--address <刚选的 MAC>`（命令行优先于 ini 是既有规则），
+  提示语说明"临时拉起、保存后才写入 ini"。`spawn_detached` 改成带参数版本。
+
+### 17.4 真机进展（2026-09-17）
+
+真机扫描 → 发现 → 连接 → 订阅心率通知 → 读到设备名（HUAWEI WATCH HR-05F）全部
+成功，INFO 日志在订阅成功后静默属预期（心率值走 DEBUG，§15）；判数据是否真在流，
+看 15 秒内有没有"已 N 秒没有收到心率通知"WARN，或直接开 debug / mahm-probe。
+带本轮新代码的完整真机复测（选表 → 临时直连 → 出值）待手表在位时做。

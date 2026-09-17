@@ -70,7 +70,7 @@ pub enum Kind {
 /// 界面上能改的所有项。顺序就是菜单顺序。
 pub const FIELDS: &[Field] = &[
     Field { key: "demo",         desc: "模拟心率源（不用手表）",       unit: "",      kind: Kind::Bool },
-    Field { key: "address",      desc: "直连的手表 MAC（留空=扫描）",   unit: "",      kind: Kind::Text },
+    Field { key: "address",      desc: "直连的手表 MAC（留空=不连接）", unit: "",      kind: Kind::Text },
     Field { key: "scan_timeout", desc: "每轮扫描最长",                 unit: "毫秒",  kind: Kind::Int },
     Field { key: "backoff_min",  desc: "重连退避下限",                 unit: "秒",    kind: Kind::Int },
     Field { key: "backoff_max",  desc: "重连退避上限",                 unit: "秒",    kind: Kind::Int },
@@ -150,7 +150,7 @@ impl Config {
              [source]\r\n\
              ; demo=1 使用模拟心率源（60~180 随机游走），不需要手表\r\n\
              demo={}\r\n\
-             ; 留空 = 扫描（按服务 0x180D 找心率广播设备）；填了 = 跳过扫描直连\r\n\
+             ; 留空 = 不连接（避免连错设备，手表地址必须明确指定）；填了 = 直连该地址\r\n\
              address={}\r\n\
              ; 每轮扫描最长多少毫秒\r\n\
              scan_timeout_ms={}\r\n\

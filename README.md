@@ -105,7 +105,7 @@ build\hr-config.exe help            :: 全部命令
 
 ```
  1) demo          模拟心率源（不用手表）          = 否
- 2) address       直连的手表 MAC（留空=扫描）      = (空，自动扫描)
+ 2) address       直连的手表 MAC（留空=不连接）    = (空，不连接)
  ...
  9) debug         日志打印每条心率（排查用）      = 否
  10) tm_dir       TrafficMonitor 安装目录        = (空)
@@ -123,7 +123,7 @@ build\hr-config.exe help            :: 全部命令
 **改 `address`（第 2 项）时会先扫一遍附近的心率广播设备，列出来让你挑**：
 
 ```
-  直连的手表 MAC（留空=扫描）（address）
+  直连的手表 MAC（留空=不连接）（address）
   正在扫描心率广播设备（5 秒）… 手表请停在"心率广播"页面并保持亮屏。
   扫到 2 台：
     1) AA:BB:CC:DD:EE:FF   HUAWEI WATCH GT 4   ← 当前
@@ -133,21 +133,26 @@ build\hr-config.exe help            :: 全部命令
 选择 >
 ```
 
-输入编号选中那台，`0` 重新扫描，回车保持原值，`-` 清空（回到自动扫描），直接敲
+输入编号选中那台，`0` 重新扫描，回车保持原值，`-` 清空（daemon 将不连接），直接敲
 MAC 也照样认。扫描是借 `hr-daemon.exe --scan` 做的，hr-config 自己不碰蓝牙。
 
 手表**被 daemon 连着的时候通常就不再广播了**，所以 daemon 正在跑时菜单会先问一句
-"先停掉它再扫描？"（答 y 就停掉、等 2 秒让手表恢复广播、扫完再自动把 daemon 拉起来）。
-扫描固定 5 秒，比 daemon 自己的 `scan_timeout` 短，赶时间的设备可能漏掉，扫不到就按
-`0` 再扫一次。
+"先停掉它再扫描？"（答 y 就停掉、等 2 秒让手表恢复广播、扫完选完再把 daemon 拉起来）。
+拉起时**直接用你刚选的地址临时直连**（命令行参数优先于 ini），选完马上就能看到数据；
+地址要按 `s`/`r` 保存重启后才写进 ini。扫描固定 5 秒，赶时间的设备可能漏掉，扫不到
+就按 `0` 再扫一次。
+
+顺带一提：hr-config 拉起 daemon 时都带 `--quiet`，daemon 不附加配置窗口的控制台——
+日志不会刷进菜单（看 `hr-daemon.log`），在这个窗口按 Ctrl+C 或直接关窗口也不会把
+daemon 连带杀掉。
 
 ### hr-daemon.ini
 
 | 键 | 默认 | 说明 |
 |---|---|---|
 | `demo` | 否 | 换成模拟心率源（60~180 随机游走），不需要手表 |
-| `address` | 空 | 直连的手表 MAC；留空则扫描 |
-| `scan_timeout_ms` | 20000 | 每轮扫描最长时长 |
+| `address` | 空 | 直连的手表 MAC；**留空则不连接**——daemon 不会自己扫一台连上（多设备环境会连错表），必须用 hr-config 选表或手填明确指定 |
+| `scan_timeout_ms` | 20000 | 预留。daemon 常驻时已不自行扫描（`--scan` 的时长由命令行参数给定），此键暂不起作用 |
 | `backoff_min_sec` / `backoff_max_sec` | 1 / 30 | 重连退避的上下限 |
 | `timeout_ms` | 15000 | 多久没数据就显示 `--`（毫秒） |
 | `refresh_ms` | 1000 | 采样/推送周期（毫秒） |
@@ -211,14 +216,19 @@ MAHM 约定的"当前没有数据"。
 2. 在运动健康里开启**心率广播**（不同机型路径略有差异，一般在设备 → 健康监测/心率
    里；有些机型是锻炼界面里的"广播心率"）。
 3. 手表停在**心率广播页面并保持亮屏**，离开该页面广播就停了。
-4. 起 daemon（`build\hr-daemon.exe`，或用 `scripts\run-daemon.cmd` 看实时日志）：
+4. 选定手表并起 daemon。跑 `build\hr-config.exe` 进菜单，第 2 项扫描选出你的手表
+   （选完它会自动用该地址把 daemon 临时拉起，回菜单按 `r` 保存并重启）；或者命令行
+   一把梭（MAC 可先用 `--scan` 确认，见下）：
 
 ```cmd
 build\hr-config.exe set demo 0
+build\hr-config.exe set address AA:BB:CC:DD:EE:FF
 build\hr-config.exe restart
 ```
 
-日志里出现 `BLE: 发现设备 ...` → `BLE: 已连接 ...，已订阅心率通知` 就成了。
+日志里出现 `模式: 直连配置里的地址 ...` → `BLE: 已连接 ...，已订阅心率通知` 就成了。
+**地址留空 daemon 不会连接**（它不会自己扫一台连上，避免连错设备），任务栏和 OSD 会
+一直显示 `--`，日志里提示"未配置手表地址"。
 
 想先确认广播在线，可以用 `build\hr-daemon.exe --scan 10`：它会扫 10 秒，把每个设备
 的 `MAC<TAB>名字` 写进 `build\hr-scan.txt`，然后退出。华为手表在广播里常常不带名字，
@@ -302,7 +312,7 @@ RTSS 只在自己 hook 到的 3D 程序上画 OSD，所以要确认 OSD 真的�
 ## 开机自启
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File scripts\install-task.ps1            # 扫描模式
+powershell -ExecutionPolicy Bypass -File scripts\install-task.ps1            # 按 ini 跑（ini 没配地址则不连接）
 powershell -ExecutionPolicy Bypass -File scripts\install-task.ps1 -Demo      # 模拟源
 powershell -ExecutionPolicy Bypass -File scripts\install-task.ps1 -Address AA:BB:CC:DD:EE:FF
 powershell -ExecutionPolicy Bypass -File scripts\uninstall-task.ps1          # 卸载
@@ -320,6 +330,9 @@ OSD 都会一直显示 `--`。
 `source.demo` 影响，而 `hr-config restart` 是不带参数启动的，两者行为会不一样。
 想只靠 ini 控制就别传这两个开关。
 
+注意 daemon 现在**地址留空就不连接**：想让自启实例真正连上表，要么装的时候传
+`-Address`，要么先用 hr-config 选表保存（把 `source.address` 写进 ini）再装。
+
 ## hr-daemon 命令行参数
 
 ```
@@ -331,12 +344,17 @@ hr-daemon.exe --scan [秒数] [--out 文件]
                                      只扫描附近的心率广播设备，结果写成
                                      "MAC<TAB>名字" 每行一台后退出
 hr-daemon.exe --debug                连每条心率都写进日志
+hr-daemon.exe --quiet                不附加控制台，日志只写文件（hr-config 拉起时用）
 hr-daemon.exe --help
 ```
 
 单实例靠互斥体 `Local\HuaWeiHR_daemon`，重复启动会记一行日志后退出。正常退出
 （`taskkill` 不带 `/F`、Ctrl+C、注销、关机）会关掉共享内存映射；正在扫描时也能立刻
 收手，不会卡在扫描循环里。
+
+`hr-config` 拉起 / restart 出来的 daemon 都带 `--quiet`：不附加任何控制台，日志只进
+文件，配置窗口的 Ctrl+C / 关闭不会把它连带杀掉。从 cmd 手动跑则保持原行为：附加父
+控制台、日志同屏，可 Ctrl+C 退出。
 
 ## 排查
 
@@ -346,7 +364,8 @@ hr-daemon.exe --help
 
 | 现象 | 排查 |
 |---|---|
-| OSD 和任务栏都是 `--`，日志停在"开始扫描心率广播设备" | 手表没停在心率广播页面 / 没亮屏 / 太远。用 `hr-daemon.exe --scan 10` 确认广播在线 |
+| OSD 和任务栏都是 `--`，日志"未配置手表地址，不连接" | 还没选表：`hr-config` 第 2 项扫描选表（或 `set address <MAC>`），再重启 daemon |
+| 日志反复 "BLE: N 秒后重试" / "找不到设备 …" | 手表没停在心率广播页面 / 没亮屏 / 太远 / 被手机连走。用 `hr-daemon.exe --scan 10` 确认广播在线 |
 | 日志 "无法启动扫描 …（蓝牙适配器关了？）" | 电脑蓝牙关了，或适配器被禁用 |
 | 日志 "未找到心率服务 0x180D" | 连上了但没有心率服务，手表那边没真正开始广播 |
 | 日志反复 "已 N 秒没有收到心率通知，判定连接失效" | 广播断了（常见于手表息屏）。daemon 会自动重连，退避 1→2→4…→30 秒 |
@@ -363,9 +382,10 @@ Afterburner 通常以管理员身份运行（实测普通权限连 `taskkill` �
 
 ## 当前限制
 
-- **真机（华为手表）尚未验收**，需要手表在广播页面。协议按标准 BLE HR Profile 实现
-  （flags bit0 决定 bpm 是 uint8 还是 uint16 小端），代码路径已用"直连不存在地址"
-  验证过会优雅失败并退避，但没跑过真表。
+- **真机（华为手表）验收进行中**：2026-09-17 实测扫描 → 连接 → 订阅 → 读到设备名
+  （HUAWEI WATCH HR-05F）已通；心率值进共享内存、息屏/超时断开后的长时间重连还没
+  长测。协议按标准 BLE HR Profile 实现（flags bit0 决定 bpm 是 uint8 还是 uint16
+  小端），"直连不存在地址会优雅失败并退避"已验证。
 - 只暴露一条数据源（`Heart rate`，bpm）。电量（`0x180F`）、RR 间期、连接状态、
   PMDP 数据源、桌面常驻 overlay、Rust 重写 daemon：明确不做，留二期。
 - 数据超过 `timeout_ms` 没更新即视为超时，两处都显示 `--`；插件对 Afterburner 报的是

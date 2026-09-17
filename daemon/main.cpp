@@ -5,7 +5,8 @@
 //   * HeartRate.dll        → MSI Afterburner 监控数据源 / OSD
 // daemon 自己不画任何东西，OSD 的呈现完全归 Afterburner 管。
 //
-// GUI 子系统静默运行；从 cmd 启动时会附加到父控制台，日志同时写文件。
+// GUI 子系统静默运行；从 cmd 启动时会附加到父控制台，日志同时写文件；
+// --quiet（hr-config 拉起时用）则不附加任何控制台，日志只进文件。
 #include <windows.h>
 #include <shellapi.h>
 
@@ -36,6 +37,7 @@ struct Options {
     bool               scan        = false;   // --scan：只扫描设备，写文件后退出
     int                scanSec     = 10;
     std::wstring       scanOut;
+    bool               quiet       = false;   // --quiet：不附加控制台，日志只写文件（hr-config 拉起时用）
 };
 
 // ---------------------------------------------------------------- 全局状态
@@ -44,6 +46,7 @@ HWND                      g_hwnd = nullptr;
 HrSharedWriter            g_writer;
 HrSink                    g_sink;
 std::unique_ptr<HrSource> g_source;
+bool                      g_unconfigured = false;  // 没配手表地址：不连接（见 Run 里的未配置分支）
 HrConfig                  g_cfg;          // 启动时从 hr-daemon.ini 读入
 
 ULONGLONG   g_lastTick1s  = 0;
@@ -93,7 +96,7 @@ void Tick() {
     const int  out   = fresh ? s.bpm : -1;
 
     DWORD status;
-    if (!have)      status = s.status;    // 无数据 / 连接中
+    if (!have)      status = g_unconfigured ? HRS_NODATA : s.status;
     else if (fresh) status = HRS_OK;
     // 曾经拿到过数据之后 bpm 不会再被清成 -1，所以"正在重连"只能靠数据源自己
     // 上报的状态来分辨；不加这一句的话每次重连都会被写成"已超时"。
@@ -123,6 +126,8 @@ void Tick() {
         // 心率值本身走 DEBUG：手表的心率几乎每秒都在变，写进 INFO 日志很快就把
         // 文件刷爆了。想看到每一条就打开 log.debug（或 --debug）。
         if (out >= 0) LogDebug("心率: %d bpm", out);
+        else if (g_unconfigured)
+            LogInfo("心率: -- （未配置手表地址，不连接；用 hr-config 第 2 项选表）");
         else          LogInfo("心率: -- （%s）",
                               status == HRS_TIMEOUT     ? "数据超时" :
                               status == HRS_CONNECTING  ? "连接中"   : "无数据");
@@ -180,11 +185,12 @@ void PrintUsage() {
     LogInfo("hr-daemon —— 华为手表心率广播 → 共享内存（TrafficMonitor 任务栏 / Afterburner OSD）");
     LogInfo("");
     LogInfo("用法:");
-    LogInfo("  hr-daemon.exe              扫描并连接心率广播设备（正常使用）");
+    LogInfo("  hr-daemon.exe              连接配置里的手表（正常使用；未配地址则不连接）");
     LogInfo("  hr-daemon.exe --demo       用模拟心率源联调，无需手表");
     LogInfo("  hr-daemon.exe --address AA:BB:CC:DD:EE:FF");
-    LogInfo("                             跳过扫描直连指定手表");
+    LogInfo("                             直连指定手表");
     LogInfo("  hr-daemon.exe --debug      连每条心率都写进日志（平时不写）");
+    LogInfo("  hr-daemon.exe --quiet      不附加控制台，日志只写文件（hr-config 拉起时用）");
     LogInfo("  hr-daemon.exe --help       显示本帮助");
     LogInfo("");
     LogInfo("  hr-daemon.exe --scan [秒数] [--out 文件]");
@@ -265,15 +271,22 @@ int Run(HINSTANCE hInst, const Options& opt) {
                 bc.nameHint    = HrFormatMac(a);
                 LogInfo("模式: 直连配置里的地址 %s", ToUtf8(bc.nameHint).c_str());
             } else {
-                LogWarn("配置 source.address=\"%s\" 不是合法 MAC，改为扫描", ToUtf8(g_cfg.address).c_str());
+                LogWarn("配置 source.address=\"%s\" 不是合法 MAC，保持不连接", ToUtf8(g_cfg.address).c_str());
             }
         }
-        if (!bc.haveAddress) LogInfo("模式: 扫描心率广播设备（服务 0x180D）");
-
-        g_source = MakeBleSource(g_sink, bc);
+        if (bc.haveAddress) {
+            g_source = MakeBleSource(g_sink, bc);
+        } else {
+            // 旧行为是扫描并连第一台 0x180D 设备——多设备环境下会连错表，而且
+            // 一旦连上手表就停止广播，想换表都不好扫。现在地址留空就保持断开，
+            // 让用户用 hr-config 明确选表（--scan 一次性扫描仍然保留给选表用）。
+            LogInfo("模式: 未配置手表地址，不连接（避免连错设备）；请用 hr-config 第 2 项选表");
+            g_unconfigured = true;   // Tick 的状态行据此显示“未配置手表地址”
+        }
     }
 
-    if (!g_source->Start(err)) {
+    // 未配置地址时 g_source 为空：不采集，但主循环照常跑（共享内存持续写 --）
+    if (g_source && !g_source->Start(err)) {
         LogError("数据源启动失败: %s", err.c_str());
         g_source.reset();
     }
@@ -313,6 +326,8 @@ Options ParseArgs(int argc, wchar_t** argv, std::vector<std::string>& warns) {
             o.demo = true;
         } else if (a == L"--debug") {
             o.debug = true;
+        } else if (a == L"--quiet") {
+            o.quiet = true;
         } else if (a == L"--help" || a == L"-h" || a == L"/?") {
             o.help = true;
         } else if (a == L"--address" || a == L"-a") {
@@ -363,6 +378,7 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, PWSTR, int) {
     if (argv) LocalFree(argv);
 
     LogSetDebug(opt.debug || g_cfg.log_debug);
+    LogSetQuiet(opt.quiet);   // 必须赶在 LogInit 之前：它决定要不要附加父控制台
 
     const std::wstring logPath = LogInit(HrExeDir(), g_cfg.log_max_kb, /*rotate=*/!opt.scan);
     if (!logPath.empty()) LogInfo("日志文件: %s", ToUtf8(logPath).c_str());

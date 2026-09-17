@@ -92,8 +92,10 @@ pub fn spawn(exe: &Path, args: &[String]) -> Result<win::ProcessInformation, Str
 }
 
 /// 起一个进程就走，不等它（daemon 常驻就是这样起的）。
-pub fn spawn_detached(exe: &Path) -> Result<(), String> {
-    let pi = spawn(exe, &[])?;
+/// 参数从这里统一带：["--quiet"]，选完表再加 ["--address", mac]。
+pub fn spawn_detached(exe: &Path, args: &[&str]) -> Result<(), String> {
+    let owned: Vec<String> = args.iter().map(|s| s.to_string()).collect();
+    let pi = spawn(exe, &owned)?;
     unsafe {
         win::CloseHandle(pi.h_thread);
         win::CloseHandle(pi.h_process);

@@ -397,6 +397,16 @@ private:
         int backoffSec = (m_cfg.backoff_min_sec < 1) ? 1 : m_cfg.backoff_min_sec;
         const int streamTimeoutMs = (m_cfg.timeout_ms < 1000) ? 1000 : m_cfg.timeout_ms;
 
+        if (!m_cfg.haveAddress) {
+            // 正常路径走不到这里：main 在没配地址时根本不建 BLE 源（未配置=不连接，
+            // 免得多设备环境连错表）。留一道防御——万一哪天被建出来了，也绝不
+            // 自作主张扫描连接，就地待机等 Stop。
+            LogInfo("BLE: 未配置手表地址，待机（不扫描、不连接）");
+            while (!m_stop) Sleep(200);
+            LogInfo("BLE: 采集线程退出");
+            return;
+        }
+
         while (!m_stop) {
             bool live = false;
             try {
@@ -406,6 +416,9 @@ private:
                     live = ConnectAndStream(m_sink, m_stop, m_cfg.address, m_cfg.nameHint,
                                             streamTimeoutMs);
                 } else {
+                    // 走不到：无地址在函数开头就被拦下待机了（未配置=不连接）。
+                    // 这段保留是为了语义完整——真要恢复自动扫描，得先想清楚
+                    // 多设备环境下连错表的问题（见 PLAN.md 第七轮）。
                     unsigned long long addr = 0;
                     std::wstring       name;
                     if (ScanForDevice(m_cfg.scan_timeout_ms, addr, name, m_stop)) {

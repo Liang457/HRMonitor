@@ -1,6 +1,6 @@
 [package]
 name = "hr-config"
-version = "1.0.0"
+version = "1.0.1"
 edition = "2021"
 description = "配置工具：华为手表心率 → TrafficMonitor + RTSS OSD"
 license = "MIT"

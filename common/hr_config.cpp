@@ -317,7 +317,7 @@ std::string HrConfig::ToIniText() const {
         "[source]\r\n"
         "; demo=1 使用模拟心率源（60~180 随机游走），不需要手表\r\n"
         "demo=%d\r\n"
-        "; 留空 = 扫描（按服务 0x180D 找心率广播设备）；填了 = 跳过扫描直连\r\n"
+        "; 留空 = 不连接（避免连错设备，手表地址必须明确指定）；填了 = 直连该地址\r\n"
         "address=%s\r\n"
         "; 每轮扫描最长多少毫秒\r\n"
         "scan_timeout_ms=%d\r\n"

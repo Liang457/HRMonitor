@@ -154,7 +154,7 @@ fn show_value(cfg: &Config, key: &str) -> String {
     match key {
         "address" => {
             if v.is_empty() {
-                "(空，自动扫描)".into()
+                "(空，不连接)".into()
             } else {
                 v
             }
@@ -373,7 +373,7 @@ fn menu() -> i32 {
                         AddrEdit::Clear => match cfg.set("address", "") {
                             Ok(()) => {
                                 dirty = true;
-                                println!("  已清空（改为自动扫描）");
+                                println!("  已清空（daemon 将不连接）");
                             }
                             Err(e) => println!("  {}（原值未变）", e),
                         },
@@ -476,10 +476,24 @@ fn edit_address(cur: &str) -> AddrEdit {
 
     if paused {
         let exe = config::exe_dir().join(DAEMON_EXE);
-        match proc::spawn_detached(&exe) {
-            Ok(()) if wait_daemon_up(DAEMON_START_TIMEOUT_MS) => {
-                println!("  已把 hr-daemon 重新拉起来（改动保存后还会再问一次重启）。")
-            }
+        // 拉起用命令行参数（参数优先于 ini）：刚选了地址就直接直连那一台，
+        // 否则 daemon 会按旧 ini 扫描乱连，多设备环境可能连到别的表。
+        // --quiet 让 daemon 别附加本窗口的控制台：日志不刷菜单，
+        // 这里按 Ctrl+C / 关窗口也不会把 daemon 连带杀掉（日志看 hr-daemon.log）。
+        let args: Vec<&str> = match &decision {
+            AddrEdit::Set(mac) => vec!["--quiet", "--address", mac.as_str()],
+            _ => vec!["--quiet"],
+        };
+        match proc::spawn_detached(&exe, &args) {
+            Ok(()) if wait_daemon_up(DAEMON_START_TIMEOUT_MS) => match &decision {
+                AddrEdit::Set(mac) => println!(
+                    "  已把 hr-daemon 用刚选的地址 {} 临时拉起（保存后此地址才写入 ini）；日志见 hr-daemon.log",
+                    mac
+                ),
+                _ => println!(
+                    "  已把 hr-daemon 重新拉起来（改动保存后还会再问一次重启）；日志见 hr-daemon.log"
+                ),
+            },
             Ok(()) => eprintln!(
                 "  hr-daemon 没能起来，请手动跑一次 {}（或 hr-config restart）。",
                 exe.display()
@@ -686,7 +700,9 @@ fn restart_daemon() -> Result<String, String> {
 
     let was_running = daemon_running();
     stop_daemon()?;
-    proc::spawn_detached(&exe)?;
+    // --quiet：restart 出来的 daemon 是常驻后台，不附加 hr-config 的控制台——
+    // 日志只进文件，之后在配置窗口按 Ctrl+C / 关窗口也不会把它连带杀掉。
+    proc::spawn_detached(&exe, &["--quiet"])?;
     if !wait_daemon_up(DAEMON_START_TIMEOUT_MS) {
         return Err(format!(
             "{} 起来了但没注册上（多半是还有个旧的没退干净，或者启动失败）——看看同目录的 hr-daemon.log",

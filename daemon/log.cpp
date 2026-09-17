@@ -22,6 +22,7 @@ std::wstring g_dir;                          // 当前日志所在目录（轮�
 bool     g_rotate = true;                    // 这次启动要不要开新的一份
 bool     g_rotateBroken = false;             // 轮转失败过，就别每行都再试
 bool     g_debug = false;                    // DEBUG 级日志开关（默认关）
+bool     g_quiet = false;                    // 不附加控制台（见 LogSetQuiet）
 
 // 磁盘上最多留几份：hr-daemon.log + .1 + .2
 constexpr int kKeepFiles = 3;
@@ -196,7 +197,7 @@ std::wstring LogInit(const std::wstring& exeDir, int maxKb, bool rotate) {
     //   2) 由 `start` 启动、继承了控制台 —— AttachConsole 会以 ERROR_ACCESS_DENIED
     //      失败（已经附加），此时 GetConsoleWindow() 已经有效。
     // 两种情况都统一用 GetConsoleWindow() 判断是否拿得到控制台。
-    if (g_con == INVALID_HANDLE_VALUE) {
+    if (!g_quiet && g_con == INVALID_HANDLE_VALUE) {
         if (GetConsoleWindow() == nullptr)
             AttachConsole(ATTACH_PARENT_PROCESS);   // 失败也无所谓，下面再判断
         if (GetConsoleWindow() != nullptr) {
@@ -204,7 +205,7 @@ std::wstring LogInit(const std::wstring& exeDir, int maxKb, bool rotate) {
                                 nullptr, OPEN_EXISTING, 0, nullptr);
         }
     }
-    SetConsoleOutputCP(CP_UTF8);
+    if (!g_quiet) SetConsoleOutputCP(CP_UTF8);
 
     // 开新的一份：先把上次的顶成 .1（未启动时没有句柄占用，这里总能成功）
     if (!exeDir.empty()) {
@@ -221,6 +222,10 @@ std::wstring LogInit(const std::wstring& exeDir, int maxKb, bool rotate) {
 
 void LogSetDebug(bool on) {
     g_debug = on;
+}
+
+void LogSetQuiet(bool on) {
+    g_quiet = on;
 }
 
 void LogShutdown() {
