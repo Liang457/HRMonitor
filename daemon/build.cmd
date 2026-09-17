@@ -40,7 +40,9 @@ if not exist obj mkdir obj
 REM /utf-8 : sources are UTF-8, without it MSVC reads them as the system codepage
 REM          and the Chinese log strings come out as mojibake.
 REM /MT    : static CRT, so the exe runs without a VC++ redistributable.
-cl /nologo /std:c++20 /EHsc /O2 /MT /utf-8 ^
+REM /W4 /sdl /guard:cf : high warning level + extra security checks + control-flow guard.
+REM /Zi    : generate a PDB next to the exe so a crash dump can be symbolized.
+cl /nologo /std:c++20 /EHsc /O2 /MT /utf-8 /W4 /sdl /guard:cf /Zi ^
    /DUNICODE /D_UNICODE /DWIN32_LEAN_AND_MEAN /DNOMINMAX /D_WIN32_WINNT=0x0A00 ^
    /I"..\common" ^
    /Fo"obj\\" ^
@@ -61,5 +63,6 @@ if errorlevel 1 (
     echo         先结束它: taskkill /IM hr-daemon.exe   然后再跑一次本脚本。
     exit /b 1
 )
+if exist hr-daemon.pdb copy /y hr-daemon.pdb "..\build\hr-daemon.pdb" >nul
 echo [OK] build\hr-daemon.exe
 endlocal

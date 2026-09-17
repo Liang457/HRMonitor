@@ -145,17 +145,56 @@ pub fn run_and_wait(exe: &Path, args: &[String], timeout_ms: u32) -> Result<u32,
 // ---------------------------------------------------------------- 带管道的子进程
 
 /// 一个带 stdout 读端的子进程。句柄非 Send，封一层保证只在线程内挪动。
+/// `job` 把子进程（连同它会再起的孙进程）拴在 KILL_ON_JOB_CLOSE 作业里：
+/// 本进程无论怎么死（崩溃/被任务管理器结束），子进程都会被系统收掉，
+/// 不会留下孤儿扫描、孤儿 powershell。
 pub struct Child {
     pub process: win::Handle,
     thread: win::Handle,
     /// stdout 读端。None = 没接管道。
     pub stdout: Option<std::fs::File>,
+    job: win::Handle,
 }
 
 /// 跨线程传"可以 TerminateProcess 的裸句柄"用（扫描取消按钮 → 扫描线程）。
-pub struct CancelHandle(pub win::Handle);
+/// 持有的是**独立复制出来的句柄**：扫描线程那边 Child Drop 关掉自己的句柄、
+/// 甚至句柄值被系统复用，都不影响这边强杀的合法性（踩过锁外 take+杀的窗口期）。
+pub struct CancelHandle(win::Handle);
 // 句柄本身跨线程可用（内核对象），只是裸指针类型系统不认
 unsafe impl Send for CancelHandle {}
+
+impl CancelHandle {
+    pub fn from_process(h: win::Handle) -> CancelHandle {
+        let mut dup: win::Handle = std::ptr::null_mut();
+        let ok = unsafe {
+            win::DuplicateHandle(
+                win::GetCurrentProcess(),
+                h,
+                win::GetCurrentProcess(),
+                &mut dup,
+                0,
+                0,
+                win::DUPLICATE_SAME_ACCESS,
+            )
+        };
+        if ok == 0 {
+            // 复制失败（实际不会发生）：退回裸句柄，至少保留取消功能
+            CancelHandle(h)
+        } else {
+            CancelHandle(dup)
+        }
+    }
+
+    pub fn terminate(&self) {
+        unsafe { win::TerminateProcess(self.0, 1) };
+    }
+}
+
+impl Drop for CancelHandle {
+    fn drop(&mut self) {
+        unsafe { win::CloseHandle(self.0) };
+    }
+}
 
 impl Child {
     /// 等进程退出，返回退出码；超过 timeout_ms 强杀并返回 1。
@@ -178,10 +217,38 @@ impl Child {
 impl Drop for Child {
     fn drop(&mut self) {
         unsafe {
+            if !self.job.is_null() {
+                // 关作业句柄 = 杀光作业里还活着的进程（KILL_ON_JOB_CLOSE）
+                win::CloseHandle(self.job);
+            }
             win::CloseHandle(self.thread);
             win::CloseHandle(self.process);
         }
     }
+}
+
+/// 建一个 KILL_ON_JOB_CLOSE 的作业并把它套在子进程上。失败就返回 null，
+/// 调用方按"没有作业兜底"继续（功能不受影响，只是少了连坐保护）。
+fn bind_job(process: win::Handle) -> win::Handle {
+    let job = unsafe { win::CreateJobObjectW(std::ptr::null_mut(), std::ptr::null()) };
+    if job.is_null() {
+        return std::ptr::null_mut();
+    }
+    let mut info = win::JobObjectExtendedLimitInformation::default();
+    info.basic_limit_information.limit_flags = win::JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+    let ok = unsafe {
+        win::SetInformationJobObject(
+            job,
+            win::JOB_OBJECT_EXTENDED_LIMIT,
+            &mut info as *mut _ as *mut std::ffi::c_void,
+            std::mem::size_of::<win::JobObjectExtendedLimitInformation>() as u32,
+        )
+    };
+    if ok == 0 || unsafe { win::AssignProcessToJobObject(job, process) } == 0 {
+        unsafe { win::CloseHandle(job) };
+        return std::ptr::null_mut();
+    }
+    job
 }
 
 /// 起进程并接管它的 stdout（匿名管道）。用于 `hr-daemon --scan` 的流式 JSON。
@@ -213,27 +280,64 @@ pub fn spawn_child(exe: &Path, args: &[String]) -> Result<Child, String> {
         write_end,
     );
     unsafe { win::CloseHandle(write_end) }; // 父进程这头用完就关，让 EOF 能到达
-    let pi = spawned?;
+    let pi = match spawned {
+        Ok(pi) => pi,
+        Err(e) => {
+            // 起失败时读端还没人接管，必须自己关，否则每次失败泄一个内核句柄
+            unsafe { win::CloseHandle(read_end) };
+            return Err(e);
+        }
+    };
 
+    let job = bind_job(pi.h_process);
     let stdout = unsafe { std::fs::File::from_raw_handle(read_end) };
-    Ok(Child { process: pi.h_process, thread: pi.h_thread, stdout: Some(stdout) })
+    Ok(Child { process: pi.h_process, thread: pi.h_thread, stdout: Some(stdout), job })
 }
 
 use std::os::windows::io::FromRawHandle;
 
 /// 跑一个控制台命令并收走它的全部 stdout/stderr（隐藏窗口）。
 /// 给部署脚本用：输出回显到面板里。超时强杀。
+///
+/// 读管道必须放独立线程：以前是先 read_to_string（阻塞到 EOF）再 wait(timeout)，
+/// 脚本挂住不退出时超时永远轮不到，面板按钮就永久 disabled。收集上限 1 MB，
+/// 超限丢头部保尾部（面板只展示最后 3000 字符，结果摘要在最后）。
 pub fn run_and_wait_capture(
     exe: &Path,
     args: &[String],
     timeout_ms: u32,
 ) -> Result<(u32, String), String> {
+    const MAX_CAPTURE: usize = 1 << 20;
     let mut child = spawn_child(exe, args)?;
     let stdout = child.stdout.take().expect("spawn_child 一定带 stdout");
-    let mut out = String::new();
-    let mut file = stdout;
-    use std::io::Read as _;
-    let _ = file.read_to_string(&mut out); // 字节流不是合法 UTF-8 也会尽力解
+    let reader = std::thread::spawn(move || {
+        use std::io::Read as _;
+        let mut out = std::collections::VecDeque::new();
+        let mut file = stdout;
+        let mut buf = [0u8; 8192];
+        loop {
+            match file.read(&mut buf) {
+                Ok(0) => break,
+                Ok(n) => {
+                    if out.len() + n > MAX_CAPTURE {
+                        let overflow = out.len() + n - MAX_CAPTURE;
+                        out.drain(..overflow.min(out.len()));
+                    }
+                    out.extend(&buf[..n]);
+                }
+                Err(_) => break,
+            }
+        }
+        out
+    });
     let code = child.wait(timeout_ms);
-    Ok((code, out))
+    // 先放掉 Child（关作业句柄会杀掉作业里还活着的孙进程，管道才会 EOF），
+    // 再等读线程收尾——否则脚本留下的常驻子进程能把 join 拖到天荒地老。
+    drop(child);
+    let out = reader.join().unwrap_or_default();
+    let mut text = String::with_capacity(out.len());
+    let chunks = out.as_slices();
+    text.push_str(&String::from_utf8_lossy(chunks.0));
+    text.push_str(&String::from_utf8_lossy(chunks.1));
+    Ok((code, text))
 }

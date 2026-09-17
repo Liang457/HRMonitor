@@ -32,6 +32,15 @@ pub const STARTF_USESTDHANDLES: u32 = 0x0000_0100;
 /// SetHandleInformation：句柄可被子进程继承
 pub const HANDLE_FLAG_INHERIT: u32 = 0x0000_0001;
 
+/// OpenProcess：只查询基本信息（映像名等），不需要能操作进程
+pub const PROCESS_QUERY_LIMITED_INFORMATION: u32 = 0x0000_1000;
+/// DuplicateHandle：新句柄获得与源句柄相同的访问权
+pub const DUPLICATE_SAME_ACCESS: u32 = 0x0000_0002;
+/// Job：句柄全关时杀光作业里的进程（manager 死则扫描子进程必死）
+pub const JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE: u32 = 0x0000_2000;
+/// SetInformationJobObject 的信息类：JOBOBJECT_EXTENDED_LIMIT_INFORMATION
+pub const JOB_OBJECT_EXTENDED_LIMIT: i32 = 9;
+
 // GetStdHandle 的标准句柄号
 pub const STD_INPUT_HANDLE: u32 = -10i32 as u32;
 pub const STD_OUTPUT_HANDLE: u32 = -11i32 as u32;
@@ -95,6 +104,49 @@ pub struct SecurityAttributes {
     pub n_length: u32,
     pub lp_security_descriptor: *mut c_void,
     pub b_inherit_handle: i32,
+}
+
+// ---- Job Object（把扫描/脚本子进程拴住：manager 死则它们必死）----
+// 只用 KILL_ON_JOB_CLOSE 一个开关，其余字段全部留零。
+#[repr(C)]
+#[derive(Default)]
+pub struct IoCounters {
+    pub read_operation_count: u64,
+    pub write_operation_count: u64,
+    pub other_operation_count: u64,
+    pub read_transfer_count: u64,
+    pub write_transfer_count: u64,
+    pub other_transfer_count: u64,
+}
+
+#[repr(C)]
+#[derive(Default)]
+pub struct JobObjectBasicLimitInformation {
+    pub per_process_user_time: i64,
+    pub per_job_user_time: i64,
+    pub limit_flags: u32,
+    pub minimum_working_set_size: usize,
+    pub maximum_working_set_size: usize,
+    pub active_process_limit: u32,
+    pub affinity: usize,
+    pub priority_class: u32,
+    pub scheduling_class: u32,
+}
+
+#[repr(C)]
+pub struct JobObjectExtendedLimitInformation {
+    pub basic_limit_information: JobObjectBasicLimitInformation,
+    pub io_info: IoCounters,
+    pub process_memory_limit: usize,
+    pub job_memory_limit: usize,
+    pub peak_process_memory_used: usize,
+    pub peak_job_memory_used: usize,
+}
+
+impl Default for JobObjectExtendedLimitInformation {
+    fn default() -> Self {
+        unsafe { std::mem::zeroed() }
+    }
 }
 
 #[link(name = "kernel32")]
@@ -167,12 +219,35 @@ extern "system" {
         flags: u32,
         template: Handle,
     ) -> Handle;
+    /// 复制一份自己的句柄（CancelHandle 用：跟 Child 的 Drop 解耦，防句柄复用窗口）
+    pub fn DuplicateHandle(
+        source_proc: Handle,
+        source: Handle,
+        target_proc: Handle,
+        target: *mut Handle,
+        desired_access: u32,
+        inherit_handle: i32,
+        options: u32,
+    ) -> i32;
+    pub fn GetCurrentProcess() -> Handle;
+    pub fn OpenProcess(desired_access: u32, inherit_handle: i32, pid: u32) -> Handle;
+    pub fn QueryFullProcessImageNameW(h: Handle, flags: u32, buf: *mut u16, size: *mut u32) -> i32;
+    // ---- Job Object ----
+    pub fn CreateJobObjectW(attrs: *mut c_void, name: *const u16) -> Handle;
+    pub fn SetInformationJobObject(
+        job: Handle,
+        info_class: i32,
+        info: *mut c_void,
+        size: u32,
+    ) -> i32;
+    pub fn AssignProcessToJobObject(job: Handle, process: Handle) -> i32;
 }
 
 #[link(name = "user32")]
 extern "system" {
     pub fn FindWindowW(class_name: *const u16, window_name: *const u16) -> Hwnd;
     pub fn PostMessageW(hwnd: Hwnd, msg: u32, wparam: usize, lparam: isize) -> i32;
+    pub fn GetWindowThreadProcessId(hwnd: Hwnd, pid: *mut u32) -> u32;
 }
 
 #[link(name = "advapi32")]
@@ -214,6 +289,12 @@ extern "system" {
 pub const ERROR_ALREADY_EXISTS: u32 = 183;
 
 // ---------------------------------------------------------------- 小工具
+
+/// CreateFileW 这类"返回句柄"的 API 失败时返回的是 INVALID_HANDLE_VALUE（-1）
+/// 而不是 null，两者都得当"没拿到"看。
+pub fn is_invalid(h: Handle) -> bool {
+    h as usize == usize::MAX
+}
 
 /// Rust 字符串 → NUL 结尾的 UTF-16
 pub fn wide(s: &str) -> Vec<u16> {

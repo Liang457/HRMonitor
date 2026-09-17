@@ -18,6 +18,8 @@ cmd /c tools\hr-manager\build.cmd :: build\hr-manager.exe  (Rust，GUI 栈依赖
 ```
 
 - C++ 的 build.cmd 用 vswhere 自动定位 MSVC（不绑死 VS 版本），产物统一落 `build\`（已 gitignore）。
+  编译统一带 `/W4 /sdl /guard:cf /Zi`（PDB 落 `build\`，崩溃转储要靠它符号化），保持零警告；
+  两个插件的 build.cmd 末尾有 dumpbin 自查（机器码架构 + 未修饰导出名），改了导出签名先想过这关。
 - C++ 全部 `/MT` 静态 CRT，目标机器不装 VC++ 运行库。
 - 不用手表即可验证整条链路：`build\hr-manager.exe set demo 1 && build\hr-manager.exe restart`，
   然后 `pwsh -File tools\mahm-probe\mahm-probe.ps1 -Filter Heart` 看 Afterburner 共享内存里的值；
@@ -73,10 +75,16 @@ cmd /c tools\hr-manager\build.cmd :: build\hr-manager.exe  (Rust，GUI 栈依赖
   确认提示读到 EOF 一律当"不做"。
 - **扫描前必须停 daemon**（手表被连着时不广播），停启编排在 `tools/hr-manager/src/scan_job.rs`：
   取消/失败路径要把 daemon 拉回来；正常扫完保持停止等选表，用户放弃时（面板关闭/点放弃）
-  再拉回——`Core::scan_needs_restore` 标志管这个。扫描线程阻塞在读管道上，取消必须
-  置位 + kill 子进程双管齐下。
+  再拉回——`Core::scan_needs_restore` 是**粘滞标志**（只在实际恢复成功处清零，扫描线程开头
+  不许清），配合 `scan-pending` 标记文件（停 daemon 前写、确认回来后删，manager 启动时看到
+  就自动恢复）兜住"扫描中途 manager 被杀"。扫描线程阻塞在读管道上，取消必须
+  置位 + kill 子进程双管齐下；`--scan` 子进程被 Job Object（KILL_ON_JOB_CLOSE）拴着，
+  manager 死则子进程必死。
 - TrafficMonitor V1.86 只扫 `plugins\*.dll`，插件必须是 `.dll` 不是 `.tmd`；
   `config.ini` 的 `plugin_disabled` 是黑名单，插件默认即启用。
+- **tm-plugin 有两个宿主窗口线程**（主窗口/任务栏各自 timer）并发调 `DataRequired()`：
+  `Refresh()` 全程独占 SRWLOCK；返回给宿主的字符串走 `TextCell` 三缓冲原子发布；
+  **读失败绝不 Close 共享内存映射**（unmap 掉别的线程正在读的视图会崩宿主，踩过）。
 - 真机（华为手表）尚未完成长测：扫描→连接→订阅→设备名已验收；心率进共享内存、息屏/
   超时断开后的长时间重连还在测。协议按标准 BLE HR Profile 实现，链路用 demo 源验收过。
 

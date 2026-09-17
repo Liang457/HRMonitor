@@ -252,6 +252,19 @@ impl Config {
             tm_dir: gets(&m, "integration.tm_dir", &d.tm_dir),
         }
     }
+
+    /// 手改 ini 可能出现越界/负值（geti 只管解析不校验范围）。daemon 侧有
+    /// 它自己的 Sanitize，这里按 set() 同款范围钳位，保证 manager 拿到的值
+    /// 一定安全可用 —— 比如负的 timeout `as u32` 会变成巨大值，永远不超时。
+    pub fn sanitized(mut self) -> Config {
+        self.scan_timeout_ms = self.scan_timeout_ms.clamp(2000, 600_000);
+        self.backoff_min_sec = self.backoff_min_sec.clamp(1, 600);
+        self.backoff_max_sec = self.backoff_max_sec.clamp(self.backoff_min_sec, 3600);
+        self.timeout_ms = self.timeout_ms.clamp(2000, 600_000);
+        self.refresh_ms = self.refresh_ms.clamp(200, 60_000);
+        self.log_max_kb = self.log_max_kb.clamp(64, 1_048_576);
+        self
+    }
 }
 
 // ---------------------------------------------------------------- 取值校验
@@ -364,28 +377,50 @@ fn sibling(path: &Path, suffix: &str) -> PathBuf {
 ///
 /// 先备份成 `.bak`，写 `.tmp`，最后原子替换。直接截断重写的话，写到一半
 /// 崩溃/断电/磁盘满就会留下一份不完整的 INI，而读端是宽容解析 —— 丢掉的键
-/// 会静默变成默认值，非常难查。
+/// 会静默变成默认值，非常难查。临时名带 pid + 序号：GUI 线程和 CLI 进程
+/// 同时写也不会踩同一个文件；写完 sync_all 再替换，断电不会丢内容。
 pub fn write_ini(path: &Path, body: &str) -> Result<(), String> {
+    let _guard = ini_lock();
+    static TMP_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let seq = TMP_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+
     let mut bytes = Vec::with_capacity(body.len() + 3);
     bytes.extend_from_slice(&[0xEF, 0xBB, 0xBF]);
     bytes.extend_from_slice(body.as_bytes());
 
-    let tmp = sibling(path, ".tmp");
-    std::fs::write(&tmp, &bytes).map_err(|e| format!("写不了 {}：{}", tmp.display(), e))?;
+    let tmp = sibling(
+        path,
+        &format!(".tmp.{}.{}", std::process::id(), seq),
+    );
+    let result = write_tmp_then_replace(path, &tmp, &bytes);
+    if result.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    result
+}
+
+fn write_tmp_then_replace(path: &Path, tmp: &Path, bytes: &[u8]) -> Result<(), String> {
+    // create_new = 独占创建：万一真有同名（不同机器同步目录之类）直接失败，
+    // 绝不写到别人正在读的文件上
+    use std::io::Write as _;
+    let mut f = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(tmp)
+        .map_err(|e| format!("创建临时文件 {} 失败：{}", tmp.display(), e))?;
+    f.write_all(bytes).map_err(|e| format!("写 {} 失败：{}", tmp.display(), e))?;
+    // 落盘再替换：否则断电时 rename 可能先于数据到盘，留下空文件/半份
+    f.sync_all().map_err(|e| format!("刷盘 {} 失败：{}", tmp.display(), e))?;
+    drop(f);
 
     if path.exists() {
         let bak = sibling(path, ".bak");
         if let Err(e) = std::fs::copy(path, &bak) {
-            let _ = std::fs::remove_file(&tmp);
             return Err(format!("备份 {} 失败：{}", bak.display(), e));
         }
     }
 
-    if let Err(e) = replace_file(&tmp, path) {
-        let _ = std::fs::remove_file(&tmp);
-        return Err(format!("替换 {} 失败：{}", path.display(), e));
-    }
-    Ok(())
+    replace_file(tmp, path).map_err(|e| format!("替换 {} 失败：{}", path.display(), e))
 }
 
 /// MoveFileExW + MOVEFILE_REPLACE_EXISTING：std 的 rename 在目标已存在时是失败的。
@@ -407,6 +442,15 @@ pub fn exe_dir() -> PathBuf {
     CACHE
         .get_or_init(|| exe_dir_uncached().unwrap_or_else(|| PathBuf::from(".")))
         .clone()
+}
+
+/// 进程内 INI 写锁：GUI 面板保存、选表、恢复默认各自在不同线程，
+/// 读改写（load→set→save）必须整段持锁，否则并发保存会互相覆盖。
+/// 跨进程（CLI set 和 GUI 同时写）靠唯一临时名保证**不会写出交错/半份内容**，
+/// 最后整体胜出的是后完成的那份——单用户配置下这是可接受的取舍。
+pub fn ini_lock() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    LOCK.lock().unwrap_or_else(|e| e.into_inner())
 }
 
 fn exe_dir_uncached() -> Option<PathBuf> {
@@ -442,7 +486,7 @@ pub fn ini_path() -> PathBuf {
 pub fn load() -> Result<(Config, PathBuf, bool), String> {
     let path = ini_path();
     match read_ini(&path)? {
-        Some(text) => Ok((Config::from_ini_text(&text), path, true)),
+        Some(text) => Ok((Config::from_ini_text(&text).sanitized(), path, true)),
         None => Ok((Config::default(), path, false)),
     }
 }

@@ -54,8 +54,12 @@ constexpr int   kNameGraceMs      = 1500;
 // 不用 Completed 回调而是轮询 Status()：回调可能在别的线程池线程上派发，
 // 生命周期不好管，轮询没这个问题，代价只是连接路径上每秒几十次属性读。
 // quiet=true 时不记警告（收尾阶段的失败是常态，不值得刷日志）。
+// stop 非空时，退出信号一到立刻 Cancel 返回——否则 Stop() 要 join 采集线程，
+// 得干等一次 FromBluetoothAddressAsync（10s）+ 服务发现（再 10s）自然超时，
+// 关机/注销那 5 秒根本等不起。
 template <typename TCreate, typename T>
-bool AwaitOp(TCreate&& create, DWORD timeoutMs, T& out, const char* what, bool quiet = false) {
+bool AwaitOp(TCreate&& create, DWORD timeoutMs, T& out, const char* what,
+             bool quiet = false, const std::atomic<bool>* stop = nullptr) {
     using TOp = decltype(create());
 
     TOp op{ nullptr };
@@ -76,6 +80,11 @@ bool AwaitOp(TCreate&& create, DWORD timeoutMs, T& out, const char* what, bool q
 
     const ULONGLONG deadline = GetTickCount64() + timeoutMs;
     while (op.Status() == winrt::Windows::Foundation::AsyncStatus::Started) {
+        if (stop && stop->load()) {
+            if (!quiet) LogInfo("BLE: %s 因退出信号中止", what);
+            try { op.Cancel(); } catch (...) {}
+            return false;
+        }
         if (GetTickCount64() >= deadline) {
             if (!quiet) LogWarn("BLE: %s 超过 %lu 毫秒没完成，放弃本次尝试", what, timeoutMs);
             try { op.Cancel(); } catch (...) {}
@@ -113,45 +122,65 @@ bool AwaitOp(TCreate&& create, DWORD timeoutMs, T& out, const char* what, bool q
 // --scan 的流式输出靠它边扫边吐。
 // 返回 false 表示扫描器起不来（蓝牙关了等）。
 using ScanEmit = std::function<void(unsigned long long addr, const std::wstring& name)>;
+
+// 扫描的共享状态。事件回调可能在 ScanCollect 返回之后才被派发完，所以互斥量/
+// 条件变量/结果表都放堆上、由回调按值持有 shared_ptr——按引用捕获栈上局部量
+// 就是 use-after-free（ConnectAndStream 的 StreamState 同理）。
+struct ScanState {
+    std::mutex m;
+    std::condition_variable cv;
+    std::map<unsigned long long, std::wstring> found;
+};
+
 bool ScanCollect(int timeoutMs, std::map<unsigned long long, std::wstring>& found,
                  const std::atomic<bool>* stop, bool stopOnFirst,
                  const ScanEmit& emit = {}) {
     WAdv::BluetoothLEAdvertisementWatcher watcher;
-    watcher.ScanningMode(WAdv::BluetoothLEScanningMode::Active);
-    watcher.AdvertisementFilter().Advertisement().ServiceUuids().Append(
-        WGatt::GattServiceUuids::HeartRate());
+    try {
+        watcher.ScanningMode(WAdv::BluetoothLEScanningMode::Active);
+        watcher.AdvertisementFilter().Advertisement().ServiceUuids().Append(
+            WGatt::GattServiceUuids::HeartRate());
+    } catch (const winrt::hresult_error& e) {
+        LogError("BLE: 配置扫描器失败 0x%08X %s",
+                 (unsigned)e.code().value, Narrow(e.message()).c_str());
+        return false;
+    } catch (const std::exception& e) {
+        LogError("BLE: 配置扫描器失败 %s", e.what());
+        return false;
+    }
 
-    std::mutex              m;
-    std::condition_variable cv;
+    auto st = std::make_shared<ScanState>();
 
     auto recvTok = watcher.Received(
-        [&](const WAdv::BluetoothLEAdvertisementWatcher&,
-            const WAdv::BluetoothLEAdvertisementReceivedEventArgs& args) {
+        [st, &emit](const WAdv::BluetoothLEAdvertisementWatcher&,
+                    const WAdv::BluetoothLEAdvertisementReceivedEventArgs& args) {
             const unsigned long long a = args.BluetoothAddress();
             std::wstring n(args.Advertisement().LocalName().c_str());
             bool report = false;
             {
-                std::lock_guard<std::mutex> lk(m);
-                auto it = found.find(a);
-                if (it == found.end()) {
-                    found.emplace(a, n);
+                std::lock_guard<std::mutex> lk(st->m);
+                auto it = st->found.find(a);
+                if (it == st->found.end()) {
+                    st->found.emplace(a, n);
                     report = true;       // 新设备
                 } else if (it->second.empty() && !n.empty()) {
                     it->second = n;      // 后一条广播补上了名字
                     report = true;
                 }
-                if (report) cv.notify_all();   // 让等待方尽快重新判断（可能要提前收手）
+                if (report) st->cv.notify_all();   // 让等待方尽快重新判断（可能要提前收手）
             }
             // 回调放在锁外：它可能往管道里写阻塞数据，别把等 cv 的扫描主循环也卡住
             if (report && emit) emit(a, n);
         });
 
     auto stopTok = watcher.Stopped(
-        [&](const WAdv::BluetoothLEAdvertisementWatcher&,
-            const WAdv::BluetoothLEAdvertisementWatcherStoppedEventArgs& args) {
-            LogWarn("BLE: 扫描器被系统停止，原因=%d", (int)args.Error());
-            std::lock_guard<std::mutex> lk(m);
-            cv.notify_all();
+        [st](const WAdv::BluetoothLEAdvertisementWatcher&,
+             const WAdv::BluetoothLEAdvertisementWatcherStoppedEventArgs& args) {
+            // 主动 Stop 的收尾也走这里（Error=Success），那是常态，别刷警告
+            if (args.Error() != WBluetooth::BluetoothError::Success)
+                LogWarn("BLE: 扫描器被系统停止，原因=%d", (int)args.Error());
+            std::lock_guard<std::mutex> lk(st->m);
+            st->cv.notify_all();
         });
 
     try {
@@ -167,27 +196,30 @@ bool ScanCollect(int timeoutMs, std::map<unsigned long long, std::wstring>& foun
     LogInfo("BLE: 开始扫描心率广播设备（服务 0x180D，最长 %d 秒）...", timeoutMs / 1000);
 
     {
-        std::unique_lock<std::mutex> lk(m);
+        std::unique_lock<std::mutex> lk(st->m);
         const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeoutMs);
         std::chrono::steady_clock::time_point firstHit{};
         while (std::chrono::steady_clock::now() < deadline) {
             if (stop && stop->load()) break;
-            if (stopOnFirst && !found.empty()) {
+            if (stopOnFirst && !st->found.empty()) {
                 if (firstHit == std::chrono::steady_clock::time_point{})
                     firstHit = std::chrono::steady_clock::now();
                 // 名字拿到就走；拿不到也只再多等一小会儿（连接后还能从
                 // device.Name() 补上），不为一个名字白等满整轮。
-                if (!found.begin()->second.empty()) break;
+                if (!st->found.begin()->second.empty()) break;
                 if (std::chrono::steady_clock::now() - firstHit >=
                     std::chrono::milliseconds(kNameGraceMs)) break;
             }
-            cv.wait_for(lk, std::chrono::milliseconds(100));
+            st->cv.wait_for(lk, std::chrono::milliseconds(100));
         }
     }
 
     try { watcher.Stop(); } catch (...) {}
     watcher.Received(recvTok);
     watcher.Stopped(stopTok);
+    // 回收结果要在注销之后：注销到 watcher 析构之间在飞的回调还可能写 st->found
+    std::lock_guard<std::mutex> lk(st->m);
+    found = std::move(st->found);
     return true;
 }
 
@@ -199,7 +231,7 @@ bool ConnectAndStream(HrSink& sink, const std::atomic<bool>& stop,
 
     WBluetooth::BluetoothLEDevice device{ nullptr };
     if (!AwaitOp([&] { return WBluetooth::BluetoothLEDevice::FromBluetoothAddressAsync(address); },
-                 kConnectTimeoutMs, device, "FromBluetoothAddressAsync"))
+                 kConnectTimeoutMs, device, "FromBluetoothAddressAsync", false, &stop))
         return false;
     if (!device) {
         LogWarn("BLE: 找不到设备 %s（不在范围内，或地址已失效）", MacToString(address).c_str());
@@ -234,7 +266,7 @@ bool ConnectAndStream(HrSink& sink, const std::atomic<bool>& stop,
         [&] {
             return device.GetGattServicesForUuidAsync(WGatt::GattServiceUuids::HeartRate());
         },
-        kConnectTimeoutMs, svcRes, "获取心率服务");
+        kConnectTimeoutMs, svcRes, "获取心率服务", false, &stop);
 
     if (svcOk && (svcRes.Status() != WGatt::GattCommunicationStatus::Success ||
                   svcRes.Services().Size() == 0)) {
@@ -245,7 +277,7 @@ bool ConnectAndStream(HrSink& sink, const std::atomic<bool>& stop,
                     WGatt::GattServiceUuids::HeartRate(),
                     WBluetooth::BluetoothCacheMode::Uncached);
             },
-            kConnectTimeoutMs, svcRes, "强制发现心率服务");
+            kConnectTimeoutMs, svcRes, "强制发现心率服务", false, &stop);
     }
     if (!svcOk) return fail("心率服务查询失败");
 
@@ -267,7 +299,7 @@ bool ConnectAndStream(HrSink& sink, const std::atomic<bool>& stop,
             return svc.GetCharacteristicsForUuidAsync(
                 WGatt::GattCharacteristicUuids::HeartRateMeasurement());
         },
-        kConnectTimeoutMs, chrRes, "获取测量特征");
+        kConnectTimeoutMs, chrRes, "获取测量特征", false, &stop);
 
     if (chrOk && (chrRes.Status() != WGatt::GattCommunicationStatus::Success ||
                   chrRes.Characteristics().Size() == 0)) {
@@ -278,7 +310,7 @@ bool ConnectAndStream(HrSink& sink, const std::atomic<bool>& stop,
                     WGatt::GattCharacteristicUuids::HeartRateMeasurement(),
                     WBluetooth::BluetoothCacheMode::Uncached);
             },
-            kConnectTimeoutMs, chrRes, "强制发现测量特征");
+            kConnectTimeoutMs, chrRes, "强制发现测量特征", false, &stop);
     }
     if (!chrOk) return fail("心率测量特征查询失败");
 
@@ -295,39 +327,54 @@ bool ConnectAndStream(HrSink& sink, const std::atomic<bool>& stop,
                 return chr.WriteClientCharacteristicConfigurationDescriptorAsync(
                     WGatt::GattClientCharacteristicConfigurationDescriptorValue::Notify);
             },
-            kGattTimeoutMs, subSt, "订阅 notify") ||
+            kGattTimeoutMs, subSt, "订阅 notify", false, &stop) ||
         subSt != WGatt::GattCommunicationStatus::Success) {
         char buf[96];
         _snprintf_s(buf, sizeof(buf), _TRUNCATE, "订阅 notify 失败（status=%d）", (int)subSt);
         return fail(buf);
     }
 
-    // ---- 数据回调
-    auto valTok = chr.ValueChanged([state, &sink](const WGatt::GattCharacteristic&,
+    // ---- 数据回调 + 收尾段。
+    // 订阅成功后到数据循环之间的任何异常（device.Name() 在 RPC 失效时会抛、
+    // 字符串分配可能 bad_alloc）都要把事件注销和 device.Close() 做干净——
+    // 异常穿到 Run() 的 catch 后没人替这里收尾，CCCD 订阅会滞留在蓝牙栈里。
+    winrt::event_token valTok{};
+    try {
+        valTok = chr.ValueChanged([state, &sink](const WGatt::GattCharacteristic&,
                                                   const WGatt::GattValueChangedEventArgs& args) {
-        try {
-            WStreams::DataReader reader =
-                WStreams::DataReader::FromBuffer(args.CharacteristicValue());
-            reader.ByteOrder(WStreams::ByteOrder::LittleEndian);
-            const uint8_t flags = reader.ReadByte();
-            const int bpm = (flags & 0x01) ? (int)reader.ReadUInt16()
-                                           : (int)reader.ReadByte();
-            if (bpm > 0 && bpm < 300) {
-                state->lastNotify = GetTickCount64();
-                state->notifies.fetch_add(1);
-                sink.SetBpm(bpm);
+            try {
+                WStreams::DataReader reader =
+                    WStreams::DataReader::FromBuffer(args.CharacteristicValue());
+                reader.ByteOrder(WStreams::ByteOrder::LittleEndian);
+                const uint8_t flags = reader.ReadByte();
+                const int bpm = (flags & 0x01) ? (int)reader.ReadUInt16()
+                                               : (int)reader.ReadByte();
+                if (bpm > 0 && bpm < 300) {
+                    state->lastNotify = GetTickCount64();
+                    state->notifies.fetch_add(1);
+                    sink.SetBpm(bpm);
+                }
+            } catch (...) {
+                // 单条通知畸形不影响后续
             }
-        } catch (...) {
-            // 单条通知畸形不影响后续
-        }
-    });
+        });
 
-    std::wstring devName = device.Name().c_str();
-    if (devName.empty()) devName = nameHint;
-    if (!devName.empty()) sink.SetDevice(devName);
-    sink.SetStatus(HRS_OK);
-    LogInfo("BLE: 已连接 %s，已订阅心率通知",
-            devName.empty() ? "(未知设备)" : ToUtf8(devName).c_str());
+        std::wstring devName = device.Name().c_str();
+        if (devName.empty()) devName = nameHint;
+        if (!devName.empty()) sink.SetDevice(devName);
+        sink.SetStatus(HRS_OK);
+        LogInfo("BLE: 已连接 %s，已订阅心率通知",
+                devName.empty() ? "(未知设备)" : ToUtf8(devName).c_str());
+    } catch (...) {
+        try { chr.ValueChanged(valTok); } catch (...) {}
+        device.ConnectionStatusChanged(connTok);
+        try { device.Close(); } catch (...) {}
+        throw;
+    }
+
+    // 首个通知的宽限窗口从订阅成功那一刻起算：服务发现（两次最多 10s）不该
+    // 挤占它，否则慢一点的发现流程会让守护进程误判"连接失效"白断重连。
+    state->lastNotify = GetTickCount64();
 
     // ---- 等到断开 / 数据超时 / 收到退出信号
     // 超时值用配置里的 display.timeout_ms，和 daemon 自己判超时、插件兜底用的
@@ -350,7 +397,7 @@ bool ConnectAndStream(HrSink& sink, const std::atomic<bool>& stop,
             return chr.WriteClientCharacteristicConfigurationDescriptorAsync(
                 WGatt::GattClientCharacteristicConfigurationDescriptorValue::None);
         },
-        kGattTimeoutMs, ignored, "退订 notify", /*quiet=*/true);
+        kGattTimeoutMs, ignored, "退订 notify", /*quiet=*/true, &stop);
     try { device.Close(); } catch (...) {}
 
     LogInfo("BLE: 本次连接结束，共收到 %d 条心率通知", state->notifies.load());
@@ -450,28 +497,25 @@ std::unique_ptr<HrSource> MakeBleSource(HrSink& sink, const BleConfig& cfg) {
 
 namespace {
 
-// --scan 的输出句柄，拿到一次就一直用。
+// --scan 的输出句柄，拿到一次就一直用。函数级 static（C++11 保证只初始化一次）：
+// 多台设备的 Received 回调在不同线程池线程上并发首调，手写 g_tried 标志会双开
+// 句柄还互相覆盖。
 // 被 hr-manager 拉起时，stdout 是继承来的管道（STARTF_USESTDHANDLES），
 // GetStdHandle 直接拿得到；从 cmd 手动跑时是 GUI 子系统没有标准句柄，
 // 就附加到父控制台后打开 CONOUT$。两种情况都按字节写 UTF-8。
 HANDLE ScanOutHandle() {
-    static HANDLE g_out   = INVALID_HANDLE_VALUE;
-    static bool   g_tried = false;
-    if (g_tried) return g_out;
-    g_tried = true;
-
-    HANDLE h = GetStdHandle(STD_OUTPUT_HANDLE);
-    if (h && h != INVALID_HANDLE_VALUE) {
-        g_out = h;
-        return g_out;
-    }
-    if (GetConsoleWindow() == nullptr)
-        AttachConsole(ATTACH_PARENT_PROCESS);   // 没有父控制台就算了，输出丢弃
-    if (GetConsoleWindow() != nullptr) {
-        SetConsoleOutputCP(CP_UTF8);
-        g_out = CreateFileW(L"CONOUT$", GENERIC_WRITE, FILE_SHARE_WRITE,
-                            nullptr, OPEN_EXISTING, 0, nullptr);
-    }
+    static HANDLE g_out = []() -> HANDLE {
+        HANDLE h = GetStdHandle(STD_OUTPUT_HANDLE);
+        if (h && h != INVALID_HANDLE_VALUE) return h;
+        if (GetConsoleWindow() == nullptr)
+            AttachConsole(ATTACH_PARENT_PROCESS);   // 没有父控制台就算了，输出丢弃
+        if (GetConsoleWindow() != nullptr) {
+            SetConsoleOutputCP(CP_UTF8);
+            return CreateFileW(L"CONOUT$", GENERIC_WRITE, FILE_SHARE_WRITE,
+                               nullptr, OPEN_EXISTING, 0, nullptr);
+        }
+        return INVALID_HANDLE_VALUE;
+    }();
     return g_out;
 }
 
@@ -537,12 +581,25 @@ int BleScanStream(int seconds) {
 
     std::map<unsigned long long, std::wstring> found;
     // 一次性扫描：要列全，所以不提前收手。emit 边扫边把新设备/新名字推给读者，
-    // hr-manager 的面板因此能实时刷新列表。
+    // hr-manager 的面板因此能实时刷新列表。emit 里做字符串拼接可能抛
+    // （bad_alloc 等），异常穿过 WinRT 事件派发会直接 terminate，就地兜住。
     const ScanEmit emit = [](unsigned long long a, const std::wstring& n) {
-        // 消费端按 mac 去重、后到的名字覆盖前面的，所以统一用 device 类型即可
-        ScanEmitJson("device", a, n);
+        try {
+            // 消费端按 mac 去重、后到的名字覆盖前面的，所以统一用 device 类型即可
+            ScanEmitJson("device", a, n);
+        } catch (...) {}
     };
-    if (!ScanCollect(seconds * 1000, found, nullptr, /*stopOnFirst=*/false, emit)) return -1;
+    bool ok = false;
+    try {
+        ok = ScanCollect(seconds * 1000, found, nullptr, /*stopOnFirst=*/false, emit);
+    } catch (const std::exception& e) {
+        LogError("BLE: 扫描异常中止：%s", e.what());
+        return -1;
+    } catch (...) {
+        LogError("BLE: 扫描异常中止（未知异常）");
+        return -1;
+    }
+    if (!ok) return -1;
 
     {
         // 收尾行借 mac 字段带设备数出去（消费端按 type 分流）

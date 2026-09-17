@@ -39,35 +39,78 @@ pub struct ScanOutcome {
     pub daemon_restored: bool,
     /// 被用户取消
     pub cancelled: bool,
+    /// 非空 = 扫描失败原因。不做成 Err 是为了把上面几个字段一起带回给调用方：
+    /// "停了 daemon 却没拉回来"的善后信息不能跟着 Err 一起丢掉。
+    pub error: Option<String>,
+}
+
+/// 扫描恢复标记：停 daemon 前写、daemon 成功回来后删。
+/// manager 在扫描中途死掉（崩溃/被结束）时，daemon 会留在停止态——下次
+/// manager 启动看到这个标记就自动把 daemon 拉回来。
+fn marker_path() -> std::path::PathBuf {
+    crate::config::exe_dir().join("scan-pending")
+}
+
+fn write_marker() {
+    // 标记写不出来（目录只读之类）只是少了崩溃兜底，不影响本次扫描
+    let _ = std::fs::write(marker_path(), b"scan stopped hr-daemon\n");
+}
+
+/// daemon 确认恢复后清标记。
+pub fn clear_marker() {
+    let _ = std::fs::remove_file(marker_path());
+}
+
+/// manager 启动时调用：上次在扫描中死掉留下的标记说明 daemon 还停在停止态，
+/// 这里把它拉回来。起不来则保留标记，下次启动再试（宁可多试也不静默丢采集）。
+pub fn restore_pending() {
+    if !marker_path().exists() {
+        return;
+    }
+    std::thread::spawn(|| {
+        if ctl::running() {
+            clear_marker();
+            return;
+        }
+        if ctl::start().is_ok() {
+            clear_marker();
+        }
+    });
 }
 
 /// 跑一次扫描（阻塞，适合放线程里）。
-/// 返回 Err 的情形：daemon 停不掉 / 扫描进程起不来 / 蓝牙适配器不可用。
-/// 这三种情形里 daemon 都会被拉回原样（停过的话）。
+/// 失败情形（daemon 停不掉 / 扫描进程起不来 / 蓝牙适配器不可用）记在
+/// outcome.error 里；三种情形里 daemon 都会被尽力拉回原样（停过的话）。
 pub fn run_scan(
     secs: u32,
     stop: &AtomicBool,
     cancel_slot: &CancelSlot,
     mut on_event: impl FnMut(ScanEvent),
-) -> Result<ScanOutcome, String> {
+) -> ScanOutcome {
     let mut outcome = ScanOutcome {
         count: 0,
         stopped_daemon: false,
         daemon_restored: false,
         cancelled: false,
+        error: None,
     };
 
     // ---- 1. 手表被连着就不广播：先停 daemon
     let was_running = ctl::running();
     if was_running {
         on_event(ScanEvent::Stopping);
-        ctl::stop()?; // 停不掉就放弃扫描；daemon 原样在跑
+        write_marker();
+        if let Err(e) = ctl::stop() {
+            outcome.error = Some(e); // 停不掉就放弃扫描；daemon 原样在跑
+            clear_marker();
+            return outcome;
+        }
         outcome.stopped_daemon = true;
 
         if stop.load(Ordering::Relaxed) {
             restore(&mut outcome);
             outcome.cancelled = true;
-            return Ok(outcome);
+            return outcome;
         }
         on_event(ScanEvent::Waiting);
         // 断开之后手表要过一下才重新开始广播
@@ -75,7 +118,7 @@ pub fn run_scan(
         if stop.load(Ordering::Relaxed) {
             restore(&mut outcome);
             outcome.cancelled = true;
-            return Ok(outcome);
+            return outcome;
         }
     }
 
@@ -83,14 +126,20 @@ pub fn run_scan(
     let exe = ctl::daemon_path();
     if !exe.exists() {
         restore(&mut outcome);
-        return Err(format!("找不到 {}，先构建：cmd /c daemon\\build.cmd", exe.display()));
+        outcome.error = Some(format!("找不到 {}，先构建：cmd /c daemon\\build.cmd", exe.display()));
+        return outcome;
     }
     let args = vec!["--scan".to_string(), secs.to_string(), "--quiet".to_string()];
-    let mut child = proc::spawn_child(&exe, &args).map_err(|e| {
-        restore(&mut outcome);
-        e
-    })?;
-    *cancel_slot.lock().unwrap() = Some(proc::CancelHandle(child.process));
+    let child = match proc::spawn_child(&exe, &args) {
+        Ok(c) => c,
+        Err(e) => {
+            restore(&mut outcome);
+            outcome.error = Some(e);
+            return outcome;
+        }
+    };
+    let mut child = child;
+    *cancel_slot.lock().unwrap() = Some(proc::CancelHandle::from_process(child.process));
 
     let stdout = child.stdout.take().expect("spawn_child 一定带 stdout");
     let mut reader = std::io::BufReader::new(stdout);
@@ -127,21 +176,23 @@ pub fn run_scan(
     if stop.load(Ordering::Relaxed) {
         restore(&mut outcome);
         outcome.cancelled = true;
-        return Ok(outcome);
+        return outcome;
     }
     if code != 0 {
         restore(&mut outcome);
-        return Err("扫描起不来（蓝牙适配器关了吗？原因见 hr-daemon.log）".into());
+        outcome.error = Some("扫描起不来（蓝牙适配器关了吗？原因见 hr-daemon.log）".into());
+        return outcome;
     }
 
     on_event(ScanEvent::Done { count: outcome.count });
-    Ok(outcome)
+    outcome
 }
 
 fn restore(outcome: &mut ScanOutcome) {
     if outcome.stopped_daemon && !outcome.daemon_restored {
         if ctl::start().is_ok() {
             outcome.daemon_restored = true;
+            clear_marker();
         }
         // 拉不回来就留给调用方报：面板上有明确的 daemon 状态，别静默
     }
@@ -184,7 +235,7 @@ pub fn run_scan_cli(secs: u32) -> i32 {
     let stop = AtomicBool::new(false);
     let cancel_slot: CancelSlot = Mutex::new(None);
     let mut devices: Vec<(String, String)> = Vec::new();
-    let result = run_scan(secs, &stop, &cancel_slot, |ev| match ev {
+    let out = run_scan(secs, &stop, &cancel_slot, |ev| match ev {
         ScanEvent::Stopping => {
             print!("hr-daemon 正在运行，先停掉它（手表连着时不广播）...");
             let _ = std::io::stdout().flush();
@@ -201,26 +252,33 @@ pub fn run_scan_cli(secs: u32) -> i32 {
         ScanEvent::Done { .. } => {}
     });
 
-    match result {
-        Ok(out) => {
-            println!("扫描完成：{} 台设备。", out.count);
-            if out.stopped_daemon && !out.daemon_restored {
-                match ctl::start() {
-                    Ok(()) => println!("已把 hr-daemon 按原配置拉起来。"),
-                    Err(e) => {
-                        eprintln!("hr-daemon 没能自动拉起：{}", e);
-                        return 1;
-                    }
-                }
-            }
-            if devices.is_empty() {
-                println!("没扫到设备？检查手表是否停在\"心率广播\"页面并保持亮屏、蓝牙是否打开。");
-            }
-            0
+    if let Some(e) = &out.error {
+        eprintln!("扫描失败：{}", e);
+        // 停了 daemon 却没拉回来：CLI 里只能提示，标记文件留着给下次 manager 启动兜底
+        if out.stopped_daemon && !out.daemon_restored {
+            eprintln!("hr-daemon 还停着，重开一次 hr-manager（面板/托盘）会自动把它拉起来。");
         }
-        Err(e) => {
-            eprintln!("扫描失败：{}", e);
-            1
+        return 1;
+    }
+    println!("扫描完成：{} 台设备。", out.count);
+    if out.stopped_daemon && !out.daemon_restored {
+        match ctl::start() {
+            Ok(()) => {
+                println!("已把 hr-daemon 按原配置拉起来。");
+                clear_marker();
+            }
+            Err(e) => {
+                eprintln!("hr-daemon 没能自动拉起：{}", e);
+                eprintln!("重开一次 hr-manager（面板/托盘）会自动把它拉起来。");
+                return 1;
+            }
         }
     }
+    if out.cancelled {
+        println!("扫描已取消。");
+    }
+    if devices.is_empty() {
+        println!("没扫到设备？检查手表是否停在\"心率广播\"页面并保持亮屏、蓝牙是否打开。");
+    }
+    0
 }

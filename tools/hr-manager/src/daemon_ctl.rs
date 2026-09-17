@@ -28,9 +28,43 @@ pub fn alive() -> bool {
     true
 }
 
+/// 找 daemon 的隐藏窗口。按类名 FindWindowW 之后再用进程映像名复核：
+/// 同会话的别的进程理论上可以注册同名窗口类，WM_CLOSE 发给冒名窗口
+/// 就是替别人关程序；复核不过就当没找到。
 pub fn hwnd() -> win::Hwnd {
     let cls = win::wide(names::DAEMON_WNDCLASS);
-    unsafe { win::FindWindowW(cls.as_ptr(), std::ptr::null()) }
+    let h = unsafe { win::FindWindowW(cls.as_ptr(), std::ptr::null()) };
+    if h.is_null() || !is_daemon_window(h) {
+        return std::ptr::null_mut();
+    }
+    h
+}
+
+fn is_daemon_window(h: win::Hwnd) -> bool {
+    let mut pid = 0u32;
+    unsafe { win::GetWindowThreadProcessId(h, &mut pid) };
+    if pid == 0 {
+        return false;
+    }
+    let proc = unsafe { win::OpenProcess(win::PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+    if proc.is_null() {
+        // 打不开就别瞎拦（正常同用户场景都打得开；拦错了反而停不掉 daemon）
+        return true;
+    }
+    let mut buf = vec![0u16; 512];
+    let mut len = buf.len() as u32;
+    let ok = unsafe {
+        win::QueryFullProcessImageNameW(proc, 0, buf.as_mut_ptr(), &mut len)
+    };
+    unsafe { win::CloseHandle(proc) };
+    if ok == 0 {
+        return true;
+    }
+    let path = String::from_utf16_lossy(&buf[..len as usize]);
+    std::path::Path::new(&path)
+        .file_name()
+        .map(|n| n.eq_ignore_ascii_case(names::DAEMON_EXE))
+        .unwrap_or(false)
 }
 
 /// 在不在跑。窗口没了但进程还在（正在收尾）也算在跑。
@@ -64,12 +98,24 @@ pub fn wait_up(timeout_ms: u32) -> bool {
 /// 让正在跑的 daemon 走正常退出路径（WM_CLOSE），然后等它**真的退出**。
 /// 没在跑就什么都不做。超时返回 Err（daemon 可能卡在一次 BLE 连接里，收尾要十几秒）。
 pub fn stop() -> Result<(), String> {
-    let hwnd = hwnd();
-    if hwnd.is_null() && !alive() {
+    if !alive() && hwnd().is_null() {
         return Ok(());
     }
-    if !hwnd.is_null() {
-        unsafe { win::PostMessageW(hwnd, win::WM_CLOSE, 0, 0) };
+    // daemon 正在启动时有个窗口期：互斥体已注册（alive=true）但窗口还没建好，
+    // 这时 hwnd() 为空、WM_CLOSE 发不出去。等它把窗口立起来再发，否则会白等
+    // 满整个超时还报错。
+    let mut h = hwnd();
+    let mut waited = 0u32;
+    while h.is_null() && alive() && waited < 3000 {
+        unsafe { win::Sleep(250) };
+        waited += 250;
+        if !alive() {
+            return Ok(()); // 等着等着自己退了
+        }
+        h = hwnd();
+    }
+    if !h.is_null() {
+        unsafe { win::PostMessageW(h, win::WM_CLOSE, 0, 0) };
     }
     if wait_gone(names::DAEMON_STOP_TIMEOUT_MS) {
         Ok(())

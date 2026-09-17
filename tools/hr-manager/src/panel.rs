@@ -28,12 +28,22 @@ pub fn open(
         .map_err(|e| format!("创建窗口失败：{}", e))?;
 
     let core2 = core.clone();
-    let webview = wry::WebViewBuilder::new()
+    let builder = wry::WebViewBuilder::new()
         .with_html(include_str!("assets/index.html"))
         .with_ipc_handler(move |req: wry::http::Request<String>| {
             let body = req.body().clone();
             ipc::dispatch(&core2, &body);
         })
+        .with_navigation_handler(|uri| {
+            // 页面是 include_str! 内嵌的静态单页，没有任何真实导航需求。
+            // with_html 走 NavigateToString（data: URI）。除 data:/about: 外
+            // 一律拒绝：就算页面被注入了链接或脚本，也导航不出这个面板。
+            uri.is_empty() || uri.starts_with("data:") || uri.starts_with("about:")
+        });
+    // release 里用不到开发者工具，关掉少一个注入面
+    #[cfg(not(debug_assertions))]
+    let builder = builder.with_devtools(false);
+    let webview = builder
         .build(&window)
         .map_err(|e| format!("创建 WebView 失败：{}", e))?;
 

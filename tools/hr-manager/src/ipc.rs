@@ -29,33 +29,37 @@ pub fn dispatch(core: &Arc<Core>, body: &str) {
         }
 
         "get_config" => {
-            match config::load() {
-                Ok((cfg, path, exists)) => {
-                    let mut fields = serde_json::Map::new();
-                    for f in config::FIELDS {
-                        fields.insert(
-                            f.key.to_string(),
-                            json!(cfg.get_raw(f.key).unwrap_or_default()),
+            // 读 ini + 注册表 + FindWindow 不快，丢线程，别卡住 IPC 回调（主线程）
+            let core2 = core.clone();
+            std::thread::spawn(move || {
+                match config::load() {
+                    Ok((cfg, path, exists)) => {
+                        let mut fields = serde_json::Map::new();
+                        for f in config::FIELDS {
+                            fields.insert(
+                                f.key.to_string(),
+                                json!(cfg.get_raw(f.key).unwrap_or_default()),
+                            );
+                        }
+                        core2.timeout_ms.store(cfg.timeout_ms as u32, Ordering::SeqCst);
+                        core2.reply(
+                            id,
+                            json!({
+                                "ok": true,
+                                "config": fields,
+                                "iniPath": path.display().to_string(),
+                                "iniExists": exists,
+                                "daemonExe": ctl::daemon_path().display().to_string(),
+                                "daemonRunning": ctl::running(),
+                                "autostart": autostart::get().is_some(),
+                                "oldTask": core2.old_task.load(Ordering::SeqCst),
+                                "logDir": config::exe_dir().display().to_string(),
+                            }),
                         );
                     }
-                    core.timeout_ms.store(cfg.timeout_ms as u32, Ordering::SeqCst);
-                    core.reply(
-                        id,
-                        json!({
-                            "ok": true,
-                            "config": fields,
-                            "iniPath": path.display().to_string(),
-                            "iniExists": exists,
-                            "daemonExe": ctl::daemon_path().display().to_string(),
-                            "daemonRunning": ctl::running(),
-                            "autostart": autostart::get().is_some(),
-                            "oldTask": core.old_task.load(Ordering::SeqCst),
-                            "logDir": config::exe_dir().display().to_string(),
-                        }),
-                    );
+                    Err(e) => core2.reply(id, json!({ "ok": false, "error": e })),
                 }
-                Err(e) => core.reply(id, json!({ "ok": false, "error": e })),
-            }
+            });
         }
 
         "set_config" => {
@@ -96,8 +100,7 @@ pub fn dispatch(core: &Arc<Core>, body: &str) {
             let core2 = core.clone();
             std::thread::spawn(move || {
                 core2.scan_stop.store(false, Ordering::SeqCst);
-                core2.scan_needs_restore.store(false, Ordering::SeqCst);
-                let result = scan_job::run_scan(secs, &core2.scan_stop, &core2.scan_cancel, |ev| {
+                let out = scan_job::run_scan(secs, &core2.scan_stop, &core2.scan_cancel, |ev| {
                     let payload = match ev {
                         scan_job::ScanEvent::Stopping => json!({ "type": "stopping" }),
                         scan_job::ScanEvent::Waiting => json!({ "type": "waiting" }),
@@ -109,55 +112,76 @@ pub fn dispatch(core: &Arc<Core>, body: &str) {
                     core2.eval(format!("window.__hr.scanEvent({});", payload));
                 });
                 core2.scan_running.store(false, Ordering::SeqCst);
-                match result {
-                    Ok(out) if out.cancelled => {
-                        core2.reply(id, json!({ "ok": true, "cancelled": true }))
+                if let Some(e) = &out.error {
+                    // 失败：停了没拉回来的（本次或上次扫描留下的）都就地兜底
+                    if out.stopped_daemon && !out.daemon_restored {
+                        core2.scan_needs_restore.store(true, Ordering::SeqCst);
                     }
-                    Ok(out) => {
-                        // 正常扫完：daemon 保持停止等用户选表；用户放弃时要拉回来
-                        if out.stopped_daemon {
-                            core2.scan_needs_restore.store(true, Ordering::SeqCst);
+                    if let Err(e2) = restore_daemon_if_needed(&core2) {
+                        core2.toast(&e2);
+                    }
+                    core2.toast(&e.clone());
+                    core2.reply(id, json!({ "ok": false, "error": e }));
+                    return;
+                }
+                if out.cancelled {
+                    // 取消 = 放弃：立即恢复。本次停的 run_scan 已经拉过；
+                    // 没拉成、或上次扫描留下的停止态由这里兜底。
+                    if out.stopped_daemon && !out.daemon_restored {
+                        core2.scan_needs_restore.store(true, Ordering::SeqCst);
+                    }
+                    if let Err(e2) = restore_daemon_if_needed(&core2) {
+                        core2.toast(&e2);
+                    }
+                    core2.reply(id, json!({ "ok": true, "cancelled": true }));
+                    return;
+                }
+                // 正常扫完：daemon 保持停止等用户选表（标志/标记都留着）。
+                // 面板已经没了就没人来选了——直接恢复，别把标志留给空气。
+                if out.stopped_daemon {
+                    core2.scan_needs_restore.store(true, Ordering::SeqCst);
+                    if !core2.panel_open.load(Ordering::SeqCst) {
+                        if let Err(e2) = restore_daemon_if_needed(&core2) {
+                            core2.toast(&e2);
                         }
-                        core2.reply(id, json!({ "ok": true, "count": out.count, "daemonStopped": out.stopped_daemon }));
-                    }
-                    Err(e) => {
-                        core2.toast(&e);
-                        core2.reply(id, json!({ "ok": false, "error": e }));
                     }
                 }
+                core2.reply(id, json!({ "ok": true, "count": out.count, "daemonStopped": out.stopped_daemon }));
             });
         }
 
         "scan_cancel" => {
             core.scan_stop.store(true, Ordering::SeqCst);
-            if let Some(h) = core.scan_cancel.lock().unwrap().take() {
-                unsafe { win::TerminateProcess(h.0, 1) };
+            // take + 强杀同一个锁区间完成；CancelHandle 持有独立句柄副本，
+            // 和扫描线程 Child 的 Drop 互不影响
+            let h = core.scan_cancel.lock().unwrap().take();
+            if let Some(h) = h {
+                h.terminate();
             }
             core.reply(id, json!({ "ok": true }));
         }
 
         "scan_discard" => {
             // 用户看完结果没选：把 daemon 拉回来
-            if core.scan_needs_restore.swap(false, Ordering::SeqCst) {
-                let core2 = core.clone();
-                std::thread::spawn(move || match ctl::start() {
-                    Ok(()) => core2.reply(id, json!({ "ok": true })),
+            let core2 = core.clone();
+            std::thread::spawn(move || {
+                let ok = match restore_daemon_if_needed(&core2) {
+                    Ok(()) => true,
                     Err(e) => {
                         core2.toast(&e);
-                        core2.reply(id, json!({ "ok": false, "error": e }));
+                        false
                     }
-                });
-            } else {
-                core.reply(id, json!({ "ok": true }));
-            }
+                };
+                core2.reply(id, json!({ "ok": ok, "error": if ok { Value::Null } else { json!("hr-daemon 没能拉起来，可点“启动”重试") } }));
+            });
         }
 
         "apply_address" => {
             let mac = arg("mac").as_str().unwrap_or("").to_string();
             let core2 = core.clone();
             std::thread::spawn(move || {
-                core2.scan_needs_restore.store(false, Ordering::SeqCst);
-                let result = (|| -> Result<String, String> {
+                let result = (|| -> Result<(String, String), String> {
+                    let _guard = config::ini_lock();
                     let (mut cfg, path, _) = config::load()?;
                     let mut note = String::new();
                     if cfg.demo {
@@ -167,24 +191,33 @@ pub fn dispatch(core: &Arc<Core>, body: &str) {
                     cfg.set("address", &mac)?;
                     config::save(&cfg, &path)?;
                     let msg = ctl::restart()?;
-                    Ok(format!("{} 已保存并重启 hr-daemon{}", msg, note))
+                    Ok((msg, note))
                 })();
                 match result {
-                    Ok(m) => core2.reply(id, json!({ "ok": true, "message": m })),
+                    // 重启成功 = daemon 已经在跑，扫描留下的"欠恢复"一笔勾销
+                    Ok((msg, note)) => {
+                        core2.scan_needs_restore.store(false, Ordering::SeqCst);
+                        scan_job::clear_marker();
+                        core2.reply(id, json!({ "ok": true, "message": format!("{} 已保存并重启 hr-daemon{}", msg, note) }))
+                    }
                     Err(e) => core2.reply(id, json!({ "ok": false, "error": e })),
                 }
             });
         }
 
         "reset_config" => {
-            let r = (|| -> Result<(), String> {
-                let (_, path, _) = config::load()?;
-                config::save(&config::Config::default(), &path)
-            })();
-            match r {
-                Ok(()) => core.reply(id, json!({ "ok": true })),
-                Err(e) => core.reply(id, json!({ "ok": false, "error": e })),
-            }
+            let core2 = core.clone();
+            std::thread::spawn(move || {
+                let r = (|| -> Result<(), String> {
+                    let _guard = config::ini_lock();
+                    let (_, path, _) = config::load()?;
+                    config::save(&config::Config::default(), &path)
+                })();
+                match r {
+                    Ok(()) => core2.reply(id, json!({ "ok": true })),
+                    Err(e) => core2.reply(id, json!({ "ok": false, "error": e })),
+                }
+            });
         }
 
         "autostart_set" => {
@@ -229,20 +262,25 @@ pub fn dispatch(core: &Arc<Core>, body: &str) {
             let which = arg("which").as_str().unwrap_or("").to_string();
             match script_path(&which) {
                 Some(script) => {
-                    let args = powershell_command_args(&script, &tm_dir_arg());
-                    let params = args.iter().map(|a| crate::proc::quote_arg(a)).collect::<Vec<_>>().join(" ");
-                    let exe_w = win::wide("powershell.exe");
-                    let verb = win::wide("runas");
-                    let params_w = win::wide(&params);
-                    let rc = unsafe {
-                        win::ShellExecuteW(std::ptr::null_mut(), verb.as_ptr(), exe_w.as_ptr(), params_w.as_ptr(), std::ptr::null(), win::SW_SHOWNORMAL)
-                    };
-                    if rc > 32 {
-                        core.toast("已请求管理员权限运行，请看弹出的窗口；完成后回到这里确认状态");
-                        core.reply(id, json!({ "ok": true }));
-                    } else {
-                        core.reply(id, json!({ "ok": false, "error": format!("提权启动失败（错误码 {}；用户可能拒绝了 UAC）", rc) }));
-                    }
+                    let core2 = core.clone();
+                    // ShellExecuteW("runas") 会同步弹 UAC 等用户点，丢线程，
+                    // 别把 IPC 回调（主线程）卡在 UAC 弹窗上
+                    std::thread::spawn(move || {
+                        let args = powershell_command_args(&script, &tm_dir_arg());
+                        let params = args.iter().map(|a| crate::proc::quote_arg(a)).collect::<Vec<_>>().join(" ");
+                        let exe_w = win::wide("powershell.exe");
+                        let verb = win::wide("runas");
+                        let params_w = win::wide(&params);
+                        let rc = unsafe {
+                            win::ShellExecuteW(std::ptr::null_mut(), verb.as_ptr(), exe_w.as_ptr(), params_w.as_ptr(), std::ptr::null(), win::SW_SHOWNORMAL)
+                        };
+                        if rc > 32 {
+                            core2.toast("已请求管理员权限运行，请看弹出的窗口；完成后回到这里确认状态");
+                            core2.reply(id, json!({ "ok": true }));
+                        } else {
+                            core2.reply(id, json!({ "ok": false, "error": format!("提权启动失败（错误码 {}；用户可能拒绝了 UAC）", rc) }));
+                        }
+                    });
                 }
                 None => core.reply(id, json!({ "ok": false, "error": "找不到部署脚本（scripts 目录不在程序旁边）" })),
             }
@@ -258,6 +296,8 @@ pub fn dispatch(core: &Arc<Core>, body: &str) {
 /// 返回 (校验后的配置, 是否实际保存了)。
 fn apply_values(values: &Value) -> Result<(config::Config, bool), String> {
     let map = values.as_object().ok_or("values 得是对象")?;
+    // load→改→save 全程持锁：别的线程同时保存时不会读出半新半旧再写回去
+    let _guard = config::ini_lock();
     let (mut cfg, path, _) = config::load()?;
     for (k, v) in map {
         let s = v.as_str().unwrap_or_default();
@@ -265,6 +305,29 @@ fn apply_values(values: &Value) -> Result<(config::Config, bool), String> {
     }
     config::save(&cfg, &path)?;
     Ok((cfg, true))
+}
+
+/// daemon 因扫描停着（粘滞标志）→ 就地拉回来。成功清标志；已经在跑只清标志
+/// （比如 run_scan 内部已经恢复过）；失败把标志放回去，留给 close_panel /
+/// 下次启动重试，并返回错误让调用方决定怎么提示。
+fn restore_daemon_if_needed(core: &Arc<Core>) -> Result<(), String> {
+    if !core.scan_needs_restore.swap(false, Ordering::SeqCst) {
+        return Ok(());
+    }
+    if ctl::running() {
+        scan_job::clear_marker();
+        return Ok(());
+    }
+    match ctl::start() {
+        Ok(()) => {
+            scan_job::clear_marker();
+            Ok(())
+        }
+        Err(e) => {
+            core.scan_needs_restore.store(true, Ordering::SeqCst);
+            Err(e)
+        }
+    }
 }
 
 fn script_path(which: &str) -> Option<PathBuf> {

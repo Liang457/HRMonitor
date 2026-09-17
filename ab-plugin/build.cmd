@@ -54,14 +54,17 @@ if not exist obj mkdir obj
 REM /utf-8 : sources are UTF-8; without it MSVC reads them as the system codepage
 REM          and the Chinese comments in plugin.cpp break the build.
 REM /MT    : static CRT, so the DLL has no VC++ runtime dependency.
+REM /W4 /sdl /guard:cf : high warning level + extra security checks + control-flow guard.
+REM /Zi    : PDB next to the DLL for crash symbolization.
 REM UNICODE is deliberately NOT defined: MONITORING_SOURCE_DESC uses char[], so the
 REM          plugin must stay MBCS.
-cl /nologo /LD /std:c++20 /EHsc /O2 /MT /utf-8 ^
+cl /nologo /LD /std:c++20 /EHsc /O2 /MT /utf-8 /W4 /sdl /guard:cf /Zi ^
    /DWIN32_LEAN_AND_MEAN /DNOMINMAX /D_WIN32_WINNT=0x0601 ^
    /I"..\common" ^
    /Fo"obj\\" ^
    plugin.cpp ^
-   /Fe:HeartRate.dll
+   /Fe:HeartRate.dll ^
+   /link /INCREMENTAL:NO
 if errorlevel 1 (
     echo [ERROR] build failed
     exit /b 1
@@ -69,17 +72,19 @@ if errorlevel 1 (
 
 REM The import library and exports file are /LD byproducts; the host resolves
 REM everything by name with GetProcAddress, so it does not need them.
-del /q HeartRate.lib HeartRate.exp 2>nul
+del /q HeartRate.lib HeartRate.exp vc140.pdb 2>nul
 
 REM --- Self-check: the DLL must be x86, and the three exports must be UNDECORATED.
 REM     A decorated name such as _GetSourceData@4 would make the host fail to load us.
+REM     (No $ anchor on the name: /Zi makes dumpbin print "name = _name" notes,
+REM     but the leading space still rejects a decorated "_Name@4".)
 dumpbin /nologo /headers HeartRate.dll | findstr /i /c:"14C machine" >nul
 if errorlevel 1 (
     echo [ERROR] output is not x86 -- check that vcvarsall was initialized with x86.
     exit /b 1
 )
 for %%n in (GetSourcesNum GetSourceDesc GetSourceData) do (
-    dumpbin /nologo /exports HeartRate.dll | findstr /r /c:" %%n$" >nul
+    dumpbin /nologo /exports HeartRate.dll | findstr /r /c:" %%n" >nul
     if errorlevel 1 (
         echo [ERROR] export %%n is missing or decorated.
         echo         The host resolves plugins by name, so the name must match exactly.

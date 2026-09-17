@@ -348,6 +348,8 @@ hr-daemon.exe --help
 | 曲线一直在动，但 OSD 上不显示 | 该项属性里 `Show in On-Screen Display` 没勾；或前台不是 3D 程序（用 `build\osd_test.exe` 当画布）；或 RTSS 没在跑 |
 | 值一直是 `--`，但任务栏正常 | daemon 和 Afterburner 不在同一个会话（见"开机自启"）。用 `tools\mahm-probe\mahm-probe.ps1` 看 MAHM 里那条到底是 `FLT_MAX` 还是有值，能立刻区分"插件没数据"和"OSD 没配" |
 | 任务栏没有 `HR` 项 | 见 "TrafficMonitor" 一节 |
+| 扫描中途把 hr-manager 关掉/杀掉，之后采集一直是停的 | 重开一次 hr-manager（托盘/面板即可）：它看到程序目录里的 `scan-pending` 标记会自动把 hr-daemon 拉回来（标记在扫描停 daemon 前写下、daemon 确认回来后删除） |
+| TrafficMonitor 悬浮提示显示"版本不匹配" | 新 daemon 配了旧 hr_plugin.dll：共享内存 version 校验拦住了，两边要一起更新 |
 | `hr-manager` 报"既不是 UTF-8 也不是 UTF-16" | 配置文件被存成了别的编码，用记事本另存为 UTF-8，或删掉它让 hr-manager 重建 |
 | 中文乱码 | 只在自编译时可能发生：源码是无 BOM UTF-8，各 `build.cmd` 必须带 `/utf-8` |
 

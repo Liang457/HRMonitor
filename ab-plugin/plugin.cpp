@@ -21,6 +21,7 @@
 
 #include <cfloat>
 #include <cstring>
+#include <atomic>
 
 namespace {
 
@@ -33,21 +34,31 @@ constexpr FLOAT kMaxLimit = 180.0f;
 
 // 共享内存读者。打开一次长期持有即可：daemon 退出后映射对象依然存在（我们握着句柄），
 // daemon 重启时 CreateFileMappingW 拿到的是同一个对象，所以不需要重开或重试逻辑。
-// 宿主是单线程轮询（见官方 ReadMe 里 GetTimestamp 的描述），不怕并发。
+// 宿主实践中是单线程轮询（见官方 ReadMe 里 GetTimestamp 的描述），但打开路径
+// 仍用原子状态守一下：真有多线程调进来，也不会并发双开泄漏句柄。
 HrSharedReader g_reader;
+constexpr ULONGLONG kOpenRetryMs = 1000;    // 打不开时最多 1 秒试一次（HwPollPeriod 可调到很低）
 
 FLOAT ReadHeartRate()
 {
-    // daemon 还没起来，或刚退出且没人再持有映射：报"数据不可用"。
-    if (!g_reader.IsOpen() && !g_reader.Open())
-        return FLT_MAX;
+    if (!g_reader.IsOpen()) {
+        const ULONGLONG now = GetTickCount64();
+        static std::atomic<ULONGLONG> s_lastTry{ 0 };
+        ULONGLONG last = s_lastTry.load(std::memory_order_relaxed);
+        if (now - last < kOpenRetryMs) return FLT_MAX;
+        if (!s_lastTry.compare_exchange_strong(last, now, std::memory_order_relaxed))
+            return FLT_MAX;                 // 另一个线程正在试
+        if (!g_reader.Open())
+            return FLT_MAX;
+    }
 
     HrSharedData d;
     if (!g_reader.Read(d))
         return FLT_MAX;
 
     // daemon 会把自己判定的超时写进 status，所以以它为准；
-    // HrEffectiveBpm 里的 tick_ms 超时检查只是 daemon 非正常退出时的兜底。
+    // HrEffectiveBpm 里的 tick_ms 超时检查只是 daemon 非正常退出时的兜底
+    // （bpm > 300 的毛刺也在这里被挡掉）。
     const LONG bpm = HrEffectiveBpm(d, GetTickCount64());
 
     // FLT_MAX 是 MAHM 共享内存里"该数据源当前不可用"的约定值。
@@ -68,6 +79,10 @@ __declspec(dllexport) DWORD GetSourcesNum()
 __declspec(dllexport) BOOL GetSourceDesc(DWORD dwIndex, LPMONITORING_SOURCE_DESC pDesc)
 {
     if (dwIndex >= kSourcesNum || !pDesc)
+        return FALSE;
+    // 官方头文件注释："由宿主填好，>= 0x00010000 才会用这个结构体"。宿主用更老/更小
+    // 的结构调进来时，下面的 memset 会写穿宿主的堆——不做这个检查是越界写。
+    if (pDesc->dwVersion < 0x00010000u)
         return FALSE;
 
     // 其余字段可能是上一个数据源留下的内容，先整体清零再填。

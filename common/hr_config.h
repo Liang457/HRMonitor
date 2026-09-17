@@ -42,7 +42,9 @@ std::wstring HrFormatMac(unsigned long long addr);
 // 所以手工加进去的未知键在保存时不会被保留。
 class HrIni {
 public:
-    bool Load(const std::wstring& path);            // 文件不存在 → 视为空，返回 true
+    // 文件不存在 → 视为空，返回 true。"存在但读不了"（被占用/编码损坏）也返回
+    // true（行为不变：全用默认值），但 *fileError 会被置 true，让上层有机会提示。
+    bool Load(const std::wstring& path, bool* fileError = nullptr);
     bool Save(const std::wstring& path, const std::string& utf8Text,
               std::wstring* err = nullptr) const;
 
@@ -61,7 +63,10 @@ private:
 };
 
 // 读 UTF-8 文件（自动跳过 BOM）→ UTF-16。失败返回 false。
-bool HrReadTextFileUtf8(const std::wstring& path, std::wstring& out);
+// exists 非空时区分"文件不存在"（*exists=false）和"存在但读不了"（*exists=true）
+// —— 把文件被编辑器锁住和文件没建过混为一谈，是以前覆盖事故的根源。
+bool HrReadTextFileUtf8(const std::wstring& path, std::wstring& out,
+                        bool* exists = nullptr);
 
 // ============================================================ daemon 配置
 

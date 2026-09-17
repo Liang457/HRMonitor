@@ -30,6 +30,7 @@ constexpr UINT     kTimerMs     = 100;    // 主循环节拍（分辨率；出�
 struct Options {
     bool               demo        = false;   // 命令行覆盖配置
     bool               haveAddress = false;
+    bool               addressGiven = false;  // 命令行显式给过 --address（哪怕解析失败）
     unsigned long long address     = 0;
     bool               help        = false;
     bool               debug       = false;   // --debug：连每条心率都写进日志
@@ -68,10 +69,12 @@ void BuildRecord(HrSharedData& d, int out, DWORD status, const std::wstring& dev
     // 先整体转成 UTF-8，再按字段大小截断。直接让 WideCharToMultiByte 写进定长字段
     // 的话，名字一长它就整体失败并返回 0，于是名字静默变成空串（两个插件的
     // tooltip 上就看不到手表名了）。
+    // 转换缓冲复用（仅主线程定时器调用）：写共享内存每秒最多 10 次，没必要每次分配。
+    static std::string utf8;
     const int need = WideCharToMultiByte(CP_UTF8, 0, dev.c_str(), (int)dev.size(),
                                          nullptr, 0, nullptr, nullptr);
     if (need <= 0) return;
-    std::string utf8((size_t)need, '\0');
+    utf8.assign((size_t)need, '\0');
     if (WideCharToMultiByte(CP_UTF8, 0, dev.c_str(), (int)dev.size(),
                             utf8.data(), need, nullptr, nullptr) <= 0) return;
 
@@ -111,10 +114,18 @@ void Tick() {
     // 中立共享内存：两个显示端都读这里。超时/无效时写 bpm=-1 + HRS_TIMEOUT，
     // 读取端（HrEffectiveBpm）据此显示 "--"。
     if (!g_writer.IsOpen()) {
-        if (g_writer.Open())
+        // 打不开多半是名字被同会话别的进程占了/权限不对。每 100ms 一条 WARN
+        // 会把日志均匀灌满，只在第一条和之后每 30 秒提醒一次。
+        static int s_openFailTicks = 0;   // 仅主线程定时器调用，无并发
+        if (g_writer.Open()) {
             LogInfo("共享内存: 已就绪 %s", ToUtf8(HRSM_NAME).c_str());
-        else
+            s_openFailTicks = 0;
+        } else if (s_openFailTicks == 0) {
             LogWarn("共享内存: 打开失败 err=%lu", GetLastError());
+            s_openFailTicks = 1;
+        } else if (++s_openFailTicks % 300 == 0) {   // 300 拍 × 100ms = 30 秒
+            LogWarn("共享内存: 仍打不开 err=%lu（每 30 秒提示一次）", GetLastError());
+        }
     }
     HrSharedData rec;
     BuildRecord(rec, out, status, s.device);
@@ -209,7 +220,13 @@ void PrintUsage() {
 int Run(HINSTANCE hInst, const Options& opt) {
     // ---- 单实例
     HANDLE mutex = CreateMutexW(nullptr, TRUE, HR_MUTEX_DAEMON);
-    if (mutex && GetLastError() == ERROR_ALREADY_EXISTS) {
+    if (!mutex) {
+        // 没有互斥体就没有单实例保护：第二个实例会跟自己抢共享内存和蓝牙，
+        // 后果比不起守护进程更糟，所以直接退出
+        LogError("创建单实例互斥体失败 err=%lu，退出", GetLastError());
+        return 1;
+    }
+    if (GetLastError() == ERROR_ALREADY_EXISTS) {
         LogWarn("已经有一个 hr-daemon 在运行（互斥体 %s），本次启动退出", ToUtf8(HR_MUTEX_DAEMON).c_str());
         CloseHandle(mutex);
         return 0;
@@ -223,6 +240,7 @@ int Run(HINSTANCE hInst, const Options& opt) {
     wc.lpszClassName = HR_WNDCLASS_DAEMON;
     if (!RegisterClassExW(&wc) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS) {
         LogError("RegisterClassExW 失败 err=%lu", GetLastError());
+        CloseHandle(mutex);
         return 1;
     }
     // 不调用 ShowWindow —— 窗口始终不可见，但仍是顶层窗口，
@@ -231,6 +249,7 @@ int Run(HINSTANCE hInst, const Options& opt) {
                              0, 0, 0, 0, nullptr, nullptr, hInst, nullptr);
     if (!g_hwnd) {
         LogError("CreateWindowExW 失败 err=%lu", GetLastError());
+        CloseHandle(mutex);
         return 1;
     }
 
@@ -291,7 +310,11 @@ int Run(HINSTANCE hInst, const Options& opt) {
         g_source.reset();
     }
 
-    LogInfo("hr-daemon 已启动（PID %lu），按 Ctrl+C 退出", GetCurrentProcessId());
+    if (opt.quiet)
+        LogInfo("hr-daemon 已启动（PID %lu），可通过 hr-manager 面板或 hr-manager stop 停止",
+                GetCurrentProcessId());
+    else
+        LogInfo("hr-daemon 已启动（PID %lu），按 Ctrl+C 退出", GetCurrentProcessId());
 
     // ---- 消息循环
     MSG msg;
@@ -331,6 +354,7 @@ Options ParseArgs(int argc, wchar_t** argv, std::vector<std::string>& warns) {
         } else if (a == L"--help" || a == L"-h" || a == L"/?") {
             o.help = true;
         } else if (a == L"--address" || a == L"-a") {
+            o.addressGiven = true;   // 显式指定过：解析失败就得拦下来，不能静默回退到配置
             if (i + 1 >= argc) { warn("--address 后面缺少 MAC 地址"); continue; }
             const std::wstring v = argv[++i];
             if (HrParseMac(v, o.address)) {
@@ -386,6 +410,15 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, PWSTR, int) {
     for (const auto& n : notes) LogWarn("配置: %s", ToUtf8(n).c_str());
 
     if (opt.help) { PrintUsage(); LogShutdown(); return 0; }
+
+    // 命令行显式给了 --address 但没能用上（缺参数/格式错）：拒绝启动。
+    // 静默回退去连配置里的旧手表，用户会以为连的是新指定的那台——更糟。
+    if (opt.addressGiven && !opt.haveAddress) {
+        LogError("--address 指定失败（缺参数或格式不是 AA:BB:CC:DD:EE:FF），拒绝启动，"
+                 "不回退到配置里的地址");
+        LogShutdown();
+        return 2;
+    }
 
     // ---- --scan：只扫设备，按行往 stdout 输出 JSON 后退出（给 hr-manager 用）。
     // 没在命令行给秒数时用配置里的 scan_timeout_ms——这个键以前只喂给走不到的

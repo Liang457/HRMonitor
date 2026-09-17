@@ -107,13 +107,16 @@ bool OpenCurrent(const std::wstring& dir, bool fresh) {
     return true;
 }
 
-// 底层写入（不做轮转判断，rotate 时写说明行要用它，避免递归）
-void WriteRawBytes(const char* s, int len) {
+// 底层写入（不做轮转判断，rotate 时写说明行要用它，避免递归）。
+// flush=false 时不强制落盘：每行都 FlushFileBuffers 在 debug/告警风暴下是
+// 放大的同步 IO；INFO/DEBUG 交给轮转和 LogShutdown 的 CloseHandle 落盘，
+// 只有 WARN/ERROR 即时刷——进程被强杀时最后几条 INFO 可能丢，错误永不丢。
+void WriteRawBytes(const char* s, int len, bool flush) {
     if (len <= 0) return;
     if (g_file != INVALID_HANDLE_VALUE) {
         DWORD written = 0;
         if (WriteFile(g_file, s, (DWORD)len, &written, nullptr)) g_written += written;
-        FlushFileBuffers(g_file);   // 崩溃/被杀时也能看到最后一行
+        if (flush) FlushFileBuffers(g_file);
     }
     if (g_con != INVALID_HANDLE_VALUE) {
         // 日志是 UTF-8，转成 UTF-16 再写控制台，避免中文变乱码。
@@ -140,7 +143,7 @@ void RotateIfNeeded(int len) {
     HANDLE old = g_file;                 // 改名不影响已打开的句柄，留着兜底
     if (OpenCurrent(g_dir, /*fresh=*/true)) {
         if (old != INVALID_HANDLE_VALUE) CloseHandle(old);
-        WriteRawBytes(kRotatedNote, (int)(sizeof(kRotatedNote) - 1));
+        WriteRawBytes(kRotatedNote, (int)(sizeof(kRotatedNote) - 1), /*flush=*/false);
         return;
     }
     // 新文件开不了：把刚挪走的那份挪回来，继续往它写
@@ -148,9 +151,9 @@ void RotateIfNeeded(int len) {
     g_rotateBroken = true;
 }
 
-void WriteRaw(const char* s, int len) {
+void WriteRaw(const char* s, int len, bool flush) {
     RotateIfNeeded(len);
-    WriteRawBytes(s, len);
+    WriteRawBytes(s, len, flush);
 }
 
 void LogV(bool debug, const char* level, const char* fmt, va_list ap) {
@@ -175,7 +178,8 @@ void LogV(bool debug, const char* level, const char* fmt, va_list ap) {
     if (len <= 0) return;
 
     if (g_csReady) EnterCriticalSection(&g_cs);
-    WriteRaw(line, len);
+    // WARN/ERRO 即时落盘；INFO/DEBG 靠轮转与退出时的 CloseHandle
+    WriteRaw(line, len, level[0] == 'W' || level[0] == 'E');
     if (g_csReady) LeaveCriticalSection(&g_cs);
 }
 

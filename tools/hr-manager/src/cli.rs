@@ -35,14 +35,16 @@ pub fn run(args: &[String]) -> i32 {
         "start" => cmd_start(),
         "stop" => cmd_stop(),
         "status" => cmd_status(),
-        "scan" => {
-            let secs = args
-                .get(1)
-                .and_then(|s| s.parse::<u32>().ok())
-                .filter(|&s| s >= 1 && s <= 120)
-                .unwrap_or(5);
-            scan_job::run_scan_cli(secs)
-        }
+        "scan" => match args.get(1) {
+            None => scan_job::run_scan_cli(5),
+            Some(s) => match s.parse::<u32>() {
+                Ok(v) if (1..=120).contains(&v) => scan_job::run_scan_cli(v),
+                _ => {
+                    eprintln!("扫描时长要 1~120 的整数秒，收到「{}」", s);
+                    2
+                }
+            },
+        },
         "path" => cmd_path(),
         "help" | "--help" | "-h" | "/?" => {
             usage();
@@ -123,9 +125,17 @@ pub fn attach_console() {
             0,
             std::ptr::null_mut(),
         );
-        win::SetStdHandle(win::STD_OUTPUT_HANDLE, conout);
-        win::SetStdHandle(win::STD_ERROR_HANDLE, conout);
-        win::SetStdHandle(win::STD_INPUT_HANDLE, conin);
+        // CreateFileW 失败返回的是 INVALID_HANDLE_VALUE（-1）不是 null；
+        // 把它塞给 SetStdHandle 会让 println!/read_line 静默失败
+        let conout = if win::is_invalid(conout) { std::ptr::null_mut() } else { conout };
+        let conin = if win::is_invalid(conin) { std::ptr::null_mut() } else { conin };
+        if !conout.is_null() {
+            win::SetStdHandle(win::STD_OUTPUT_HANDLE, conout);
+            win::SetStdHandle(win::STD_ERROR_HANDLE, conout);
+        }
+        if !conin.is_null() {
+            win::SetStdHandle(win::STD_INPUT_HANDLE, conin);
+        }
     }
 }
 
@@ -209,6 +219,8 @@ fn cmd_get(key: &str) -> i32 {
 }
 
 fn cmd_set(key: &str, value: &str) -> i32 {
+    // 键名统一小写（跟 get 一致）：`set DEMO 1` 和 `set demo 1` 应该是一个意思
+    let key = &key.to_ascii_lowercase();
     let (mut cfg, path, _) = load_or_exit!();
     if let Err(e) = cfg.set(key, value) {
         eprintln!("{}", e);

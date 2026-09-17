@@ -59,6 +59,20 @@ std::wstring SanitizeText(const std::wstring& s, size_t maxLen) {
     return out;
 }
 
+// UTF-16 → UTF-16 宽字符（按字节组装，避免把未对齐的缓冲指针当 wchar_t* 解引用）。
+// 奇数尾字节丢弃（文件被截断的残迹）。
+bool DecodeUtf16(const std::string& bytes, size_t offset, bool littleEndian, std::wstring& out) {
+    const size_t count = (bytes.size() > offset) ? (bytes.size() - offset) / 2 : 0;
+    out.clear();
+    out.reserve(count);
+    for (size_t i = 0; i < count; ++i) {
+        const unsigned char b0 = (unsigned char)bytes[offset + i * 2];
+        const unsigned char b1 = (unsigned char)bytes[offset + i * 2 + 1];
+        out.push_back(littleEndian ? (wchar_t)(b0 | (b1 << 8)) : (wchar_t)((b0 << 8) | b1));
+    }
+    return true;
+}
+
 } // namespace
 
 // ============================================================ 路径工具
@@ -112,10 +126,17 @@ std::wstring HrFormatMac(unsigned long long a) {
 
 // ============================================================ 极简 INI
 
-bool HrReadTextFileUtf8(const std::wstring& path, std::wstring& out) {
+bool HrReadTextFileUtf8(const std::wstring& path, std::wstring& out, bool* exists) {
+    if (exists) *exists = false;
     HANDLE h = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
                            OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
-    if (h == INVALID_HANDLE_VALUE) return false;
+    if (h == INVALID_HANDLE_VALUE) {
+        if (exists) {
+            const DWORD e = GetLastError();
+            *exists = (e != ERROR_FILE_NOT_FOUND && e != ERROR_PATH_NOT_FOUND);
+        }
+        return false;
+    }
 
     LARGE_INTEGER sz{};
     if (!GetFileSizeEx(h, &sz) || sz.QuadPart <= 0 || sz.QuadPart > (16 << 20)) {
@@ -131,12 +152,12 @@ bool HrReadTextFileUtf8(const std::wstring& path, std::wstring& out) {
     CloseHandle(h);
     bytes.resize(total);
 
-    // 跳过 UTF-8 BOM；UTF-16 BOM 也兼容一下（用户可能拿记事本另存成 Unicode）
-    if (bytes.size() >= 2 && (unsigned char)bytes[0] == 0xFF && (unsigned char)bytes[1] == 0xFE) {
-        const wchar_t* p = (const wchar_t*)(bytes.data() + 2);
-        out.assign(p, (bytes.size() - 2) / 2);
-        return true;
-    }
+    // 跳过 UTF-8 BOM；UTF-16 BOM 也兼容一下（用户可能拿记事本另存成 Unicode），
+    // LE（FF FE）和 BE（FE FF）都认。
+    if (bytes.size() >= 2 && (unsigned char)bytes[0] == 0xFF && (unsigned char)bytes[1] == 0xFE)
+        return DecodeUtf16(bytes, 2, /*littleEndian=*/true, out);
+    if (bytes.size() >= 2 && (unsigned char)bytes[0] == 0xFE && (unsigned char)bytes[1] == 0xFF)
+        return DecodeUtf16(bytes, 2, /*littleEndian=*/false, out);
     size_t skip = 0;
     if (bytes.size() >= 3 && (unsigned char)bytes[0] == 0xEF && (unsigned char)bytes[1] == 0xBB &&
         (unsigned char)bytes[2] == 0xBF)
@@ -145,12 +166,20 @@ bool HrReadTextFileUtf8(const std::wstring& path, std::wstring& out) {
     return true;
 }
 
-bool HrIni::Load(const std::wstring& path) {
+bool HrIni::Load(const std::wstring& path, bool* fileError) {
     m_kv.clear();
     m_unknown.clear();
+    if (fileError) *fileError = false;
 
+    bool exists = false;
     std::wstring text;
-    if (!HrReadTextFileUtf8(path, text)) return true;   // 文件不存在 = 全用默认值
+    if (!HrReadTextFileUtf8(path, text, &exists)) {
+        // 文件不存在 = 全用默认值（常态）。"存在但读不了"也照旧用默认值——
+        // 这里的所有调用方都没有能弹提示的 UI——但把这一情况报给上层，
+        // 别让"被编辑器锁住"和"从没配置过"在调用方眼里一模一样。
+        if (fileError) *fileError = exists;
+        return true;
+    }
 
     std::wstring sec;
     size_t pos = 0;
@@ -176,18 +205,37 @@ bool HrIni::Load(const std::wstring& path) {
 }
 
 bool HrIni::Save(const std::wstring& path, const std::string& utf8Text, std::wstring* err) const {
-    HANDLE h = CreateFileW(path.c_str(), GENERIC_WRITE, FILE_SHARE_READ, nullptr,
+    // 写临时文件再原子替换：CREATE_ALWAYS 直接覆盖原文件的话，写到一半被杀/
+    // 断电/磁盘满会留下半份 INI，而读端宽容解析——丢掉的键全静默变默认值。
+    const std::wstring tmp = path + L".tmp";
+    HANDLE h = CreateFileW(tmp.c_str(), GENERIC_WRITE, FILE_SHARE_READ, nullptr,
                            CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
     if (h == INVALID_HANDLE_VALUE) {
-        if (err) *err = L"无法写入 " + path + L"（错误码 " + std::to_wstring(GetLastError()) + L"）";
+        if (err) *err = L"无法写入 " + tmp + L"（错误码 " + std::to_wstring(GetLastError()) + L"）";
         return false;
     }
     // UTF-8 BOM：记事本和 VS Code 都能正确识别中文注释
     const unsigned char bom[3] = { 0xEF, 0xBB, 0xBF };
     DWORD written = 0;
-    WriteFile(h, bom, 3, &written, nullptr);
-    WriteFile(h, utf8Text.data(), (DWORD)utf8Text.size(), &written, nullptr);
+    bool ok = WriteFile(h, bom, 3, &written, nullptr) &&
+              WriteFile(h, utf8Text.data(), (DWORD)utf8Text.size(), &written, nullptr);
+    if (ok) ok = FlushFileBuffers(h);   // 落盘再替换，断电不会留空文件
     CloseHandle(h);
+    if (!ok) {
+        DeleteFileW(tmp.c_str());
+        if (err) *err = L"写入 " + tmp + L" 失败（磁盘满？）";
+        return false;
+    }
+    // 旧版先挪成 .bak：替换失败还有得救
+    const std::wstring bak = path + L".bak";
+    DeleteFileW(bak.c_str());
+    MoveFileW(path.c_str(), bak.c_str());
+    if (!MoveFileExW(tmp.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING)) {
+        const DWORD e = GetLastError();
+        MoveFileW(bak.c_str(), path.c_str());
+        if (err) *err = L"替换 " + path + L" 失败（错误码 " + std::to_wstring(e) + L"）";
+        return false;
+    }
     return true;
 }
 
@@ -208,37 +256,54 @@ std::wstring HrIni::GetStr(const wchar_t* sec, const wchar_t* key, const wchar_t
 int HrIni::GetInt(const wchar_t* sec, const wchar_t* key, int def) const {
     const std::wstring v = GetStr(sec, key, L"");
     if (v.empty()) return def;
-    // errno 和范围都要看：wcstol 溢出会静默回绕/饱和，配上一个没被 Sanitize 覆盖的
-    // 新键就会把越界值原样吃进来。
+    // errno 和范围都要看：wcstol 溢出会静默回绕/饱和（并置 ERANGE），配上一个
+    // 没被 Sanitize 覆盖的新键就会把越界值原样吃进来。long 在 Windows 上就是
+    // 32 位，errno 之外不需要再有范围比较。
     errno = 0;
     wchar_t* end = nullptr;
-    long r = wcstol(v.c_str(), &end, 10);
+    const long r = wcstol(v.c_str(), &end, 10);
     if (end == v.c_str() || errno == ERANGE) return def;
     while (end && *end == L' ') ++end;
     if (end && *end != L'\0') return def;          // 尾部有垃圾，不认
-    if (r < INT_MIN || r > INT_MAX) return def;
     return (int)r;
 }
 
 float HrIni::GetFloat(const wchar_t* sec, const wchar_t* key, float def) const {
     const std::wstring v = GetStr(sec, key, L"");
     if (v.empty()) return def;
+    // 和 GetInt 同款纪律：errno、尾随垃圾都查，nan/inf 不认
+    errno = 0;
     wchar_t* end = nullptr;
-    double r = wcstod(v.c_str(), &end);
-    return (end == v.c_str()) ? def : (float)r;
+    const double r = wcstod(v.c_str(), &end);
+    if (end == v.c_str() || errno == ERANGE) return def;
+    while (end && *end == L' ') ++end;
+    if (end && *end != L'\0') return def;
+    if (!std::isfinite(r)) return def;
+    return (float)r;
 }
 
 bool HrIni::GetBool(const wchar_t* sec, const wchar_t* key, bool def) const {
     const std::wstring v = GetStr(sec, key, L"");
     if (v.empty()) return def;
-    return v == L"1" || v == L"true" || v == L"True" || v == L"TRUE" || v == L"yes" || v == L"on";
+    // 大小写不敏感；不认识的值回默认值（跟 GetInt 的"解析失败回 def"一致，
+    // 以前 "Yes"/"ON" 会被静默当成 false）
+    std::wstring t = v;
+    for (wchar_t& c : t) c = (wchar_t)towlower((wint_t)c);
+    if (t == L"1" || t == L"true" || t == L"yes" || t == L"on")  return true;
+    if (t == L"0" || t == L"false" || t == L"no" || t == L"off") return false;
+    return def;
 }
 
 // ============================================================ daemon 配置
 
 HrConfig HrConfig::Load(const std::wstring& iniPath, std::vector<std::wstring>* notes) {
     HrIni ini;
-    ini.Load(iniPath);
+    bool fileError = false;
+    ini.Load(iniPath, &fileError);
+    if (fileError && notes) {
+        notes->push_back(L"配置文件存在但读不了（被占用或编码损坏），本次使用默认值 —— "
+                         L"请检查后重启，别在此时保存配置");
+    }
 
     HrConfig c;
     c.demo            = ini.GetBool(L"source", L"demo", c.demo);

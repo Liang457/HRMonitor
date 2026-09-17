@@ -28,8 +28,8 @@ if not defined VCVARS (
     ) do if not defined VCVARS if exist %%p set "VCVARS=%%~p"
 )
 if not defined VCVARS (
-    echo [build] ERROR: 找不到 vcvars64.bat
-    echo         装一个 "Visual Studio Build Tools" ^(勾选 C++ 生成工具^) 再试。
+    echo [build] ERROR: vcvars64.bat not found.
+    echo         Install "Visual Studio Build Tools" with the C++ tools workload and retry.
     exit /b 1
 )
 echo [build] MSVC: %VCVARS%
@@ -46,16 +46,34 @@ echo [build] compiling plugin.cpp ...
 rem /LD    : build a DLL (this is what TrafficMonitor loads)
 rem /MT    : static CRT, so no VC++ redistributable is needed
 rem /utf-8 : plugin.cpp is UTF-8 without a BOM. Without this flag MSVC falls back
-rem           to the machine's ANSI codepage, so the Chinese UI strings (e.g. 心率)
+rem           to the machine's ANSI codepage, so the Chinese UI strings (e.g. Heart)
 rem           only come out right by luck and break on a differently-locale'd box.
+rem /W4 /sdl /guard:cf : high warning level + extra security checks + control-flow guard.
+rem /Zi    : PDB next to the DLL for crash symbolization.
 rem hr_config.cpp provides the hr_plugin.ini reading (display label / item name).
-cl /nologo /LD /O2 /MT /EHsc /std:c++20 /utf-8 /DUNICODE /D_UNICODE /DWIN32_LEAN_AND_MEAN /I..\common /Foobj\ plugin.cpp ..\common\hr_config.cpp /Fe:hr_plugin.dll /link /EXPORT:TMPluginGetInstance
+rem /INCREMENTAL:NO keeps the export table clean (no @ILT thunks), so the
+rem self-check below can anchor the export name at end-of-line.
+cl /nologo /LD /O2 /MT /EHsc /std:c++20 /utf-8 /W4 /sdl /guard:cf /Zi /DUNICODE /D_UNICODE /DWIN32_LEAN_AND_MEAN /I..\common /Foobj\ plugin.cpp ..\common\hr_config.cpp /Fe:hr_plugin.dll /link /INCREMENTAL:NO /EXPORT:TMPluginGetInstance
 if errorlevel 1 (
     echo [build] ERROR: compile/link failed
     exit /b 1
 )
 if not exist "hr_plugin.dll" (
     echo [build] ERROR: hr_plugin.dll was not produced
+    exit /b 1
+)
+
+rem --- Self-check, same idea as ab-plugin: the DLL must be x64 and the export
+rem --- must be present and undecorated, or the 64-bit host fails to load us.
+dumpbin /nologo /headers hr_plugin.dll | findstr /i /c:"8664 machine" >nul
+if errorlevel 1 (
+    echo [build] ERROR: output is not x64. TrafficMonitor is a 64-bit process.
+    exit /b 1
+)
+dumpbin /nologo /exports hr_plugin.dll | findstr /r /c:" TMPluginGetInstance$" >nul
+if errorlevel 1 (
+    echo [build] ERROR: export TMPluginGetInstance is missing or decorated.
+    dumpbin /nologo /exports hr_plugin.dll
     exit /b 1
 )
 
@@ -68,11 +86,11 @@ rem Also place a copy under the repo build\ directory.
 if not exist "..\build" mkdir "..\build"
 copy /y "hr_plugin.dll" "..\build\hr_plugin.dll" >nul
 if errorlevel 1 (
-    echo [build] ERROR: 拷不到 ..\build\hr_plugin.dll —— 目标可能在用 ^(TrafficMonitor 正在加载它^)
+    echo [build] ERROR: cannot copy to ..\build\hr_plugin.dll -- the file may be in use by TrafficMonitor
     exit /b 1
 )
 
-echo [build] OK: %~dp0hr_plugin.dll
+echo [build] OK: %~dp0hr_plugin.dll  - x64, export TMPluginGetInstance
 echo [build] OK: %~dp0..\build\hr_plugin.dll
 endlocal
 exit /b 0
