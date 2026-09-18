@@ -379,8 +379,11 @@ fn sibling(path: &Path, suffix: &str) -> PathBuf {
 /// 崩溃/断电/磁盘满就会留下一份不完整的 INI，而读端是宽容解析 —— 丢掉的键
 /// 会静默变成默认值，非常难查。临时名带 pid + 序号：GUI 线程和 CLI 进程
 /// 同时写也不会踩同一个文件；写完 sync_all 再替换，断电不会丢内容。
+///
+/// 叶子函数，**不拿 `ini_lock`**：读改写调用方（GUI 的 load→set→save 事务）
+/// 已持锁进来，这把锁非重入，这里再拿就是同线程永久死锁（踩过：选表确认、
+/// 保存、恢复默认三条路径一起挂死）。
 pub fn write_ini(path: &Path, body: &str) -> Result<(), String> {
-    let _guard = ini_lock();
     static TMP_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let seq = TMP_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
@@ -446,8 +449,10 @@ pub fn exe_dir() -> PathBuf {
 
 /// 进程内 INI 写锁：GUI 面板保存、选表、恢复默认各自在不同线程，
 /// 读改写（load→set→save）必须整段持锁，否则并发保存会互相覆盖。
-/// 跨进程（CLI set 和 GUI 同时写）靠唯一临时名保证**不会写出交错/半份内容**，
-/// 最后整体胜出的是后完成的那份——单用户配置下这是可接受的取舍。
+/// `save`/`write_ini` 是叶子、不拿这把锁 —— 持锁期间调用它们是安全的，
+/// 别在这两层重复加。跨进程（CLI set 和 GUI 同时写）不靠它：唯一临时名
+/// 保证**不会写出交错/半份内容**，最后整体胜出的是后完成的那份——
+/// 单用户配置下这是可接受的取舍。
 pub fn ini_lock() -> std::sync::MutexGuard<'static, ()> {
     static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
     LOCK.lock().unwrap_or_else(|e| e.into_inner())
@@ -497,3 +502,30 @@ pub fn save(cfg: &Config, path: &Path) -> Result<(), String> {
 }
 
 use crate::win;
+
+// ---------------------------------------------------------------- 测试
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 回归测试：write_ini 曾在内部拿 ini_lock，而 GUI 调用方持同一把锁进来
+    /// 保存 —— 非重入锁同线程二次加锁，选表确认/保存/恢复默认三条路径全部
+    /// 静默死锁。持锁调用 save 必须能完成；若死锁回归，本测试 5 秒超时失败。
+    #[test]
+    fn save_while_holding_ini_lock_completes() {
+        let _guard = ini_lock();
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let path = std::env::temp_dir().join(format!("hrsm_lock_test_{}.ini", std::process::id()));
+            let r = save(&Config::default(), &path);
+            let _ = std::fs::remove_file(&path);
+            let _ = tx.send(r);
+        });
+        match rx.recv_timeout(std::time::Duration::from_secs(5)) {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => panic!("save 在持锁状态下失败：{}", e),
+            Err(_) => panic!("持锁调用 save 5 秒未返回 —— ini_lock 死锁回归"),
+        }
+    }
+}

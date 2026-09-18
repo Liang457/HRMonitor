@@ -1,6 +1,6 @@
 [package]
 name = "hr-manager"
-version = "1.1.1"
+version = "1.1.2"
 edition = "2021"
 description = "管理器：华为手表心率 → TrafficMonitor + Afterburner OSD（托盘 + 配置面板 + CLI）"
 license = "MIT"

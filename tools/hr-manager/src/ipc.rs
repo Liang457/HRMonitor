@@ -181,15 +181,19 @@ pub fn dispatch(core: &Arc<Core>, body: &str) {
             let core2 = core.clone();
             std::thread::spawn(move || {
                 let result = (|| -> Result<(String, String), String> {
-                    let _guard = config::ini_lock();
-                    let (mut cfg, path, _) = config::load()?;
                     let mut note = String::new();
-                    if cfg.demo {
-                        cfg.demo = false;
-                        note = "（已顺带关闭 demo 模拟源）".to_string();
+                    {
+                        // 锁只护住 load→set→save 事务；restart 最长能卡 20 秒，
+                        // 别抱着 ini 锁等它收尾
+                        let _guard = config::ini_lock();
+                        let (mut cfg, path, _) = config::load()?;
+                        if cfg.demo {
+                            cfg.demo = false;
+                            note = "（已顺带关闭 demo 模拟源）".to_string();
+                        }
+                        cfg.set("address", &mac)?;
+                        config::save(&cfg, &path)?;
                     }
-                    cfg.set("address", &mac)?;
-                    config::save(&cfg, &path)?;
                     let msg = ctl::restart()?;
                     Ok((msg, note))
                 })();
