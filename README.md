@@ -19,8 +19,9 @@ daemon 只负责采集和写共享内存，蓝牙全在它这边；三个读端�
 它身上。
 
 BLE 走 Windows SDK 自带的 C++/WinRT（链接 `windowsapp.lib`），两个插件只依赖 `kernel32`；
-hr-manager 的 GUI 栈（wry + tao + tray-icon）是全仓库唯一的第三方 crate。第三方组件的
-授权情况见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
+hr-manager 的 GUI 栈（wry + tao + tray-icon）和构建期嵌版本信息的 winresource 是仅有的
+第三方 crate（后者只在 build.rs 用）。第三方组件的授权情况见
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
 
 ## 功能
 
@@ -32,6 +33,9 @@ hr-manager 的 GUI 栈（wry + tao + tray-icon）是全仓库唯一的第三方 
   调部署脚本都在一页里
 - **模拟源**：`demo=1` 时用心率随机游走代替手表，没有表也能验通整条链路
 - **设备区分**：按 MAC 直连，换手表只改 `address` 一行
+- **版本一致**：四个 exe/DLL 的文件属性带版本号（资源管理器 → 属性 → 详细信息），
+  `hr-daemon --version`、`hr-manager version`、面板底部和托盘提示也都能看到；版本号只在
+  `common\version.h` 和 hr-manager 的 `Cargo.toml` 两处维护，打包脚本强制校验一致
 
 ## 目录结构
 
@@ -42,7 +46,9 @@ HRMonitor\
 ├─ THIRD_PARTY_NOTICES.md      第三方组件授权说明
 ├─ common\
 │  ├─ hr_shared.h              共享内存协议（daemon 与两个插件共用的唯一定义）
-│  └─ hr_config.h/.cpp         INI 读写 + 配置结构 + 路径/MAC 工具
+│  ├─ hr_config.h/.cpp         INI 读写 + 配置结构 + 路径/MAC 工具
+│  ├─ version.h                产品版本号（C++ 侧唯一定义，与 Cargo.toml 双副本同步）
+│  └─ version.rc.in            各 exe/DLL 共用的版本资源模板（各组件目录里有自己的壳）
 ├─ daemon\                     hr-daemon.exe（C++，x64）：采集 + 写共享内存
 ├─ ab-plugin\                  HeartRate.dll（C++，x86）：Afterburner 监控数据源
 ├─ tm-plugin\                  hr_plugin.dll（C++，x64）：TrafficMonitor 插件
@@ -50,8 +56,8 @@ HRMonitor\
 │  ├─ hr-manager\              hr-manager.exe（Rust + wry）：托盘/配置面板/CLI
 │  ├─ mahm-probe\              读 Afterburner 共享内存的小脚本，排查用
 │  └─ osd_test\                osd_test.exe（C++）：D3D11 清屏窗口，验证 OSD 用
-├─ scripts\                    TrafficMonitor / Afterburner 部署脚本 + 旧自启清理
-└─ build\                      构建产物（不入库）
+├─ scripts\                    部署 / 发行打包 / 迁移 / 旧自启清理脚本
+└─ build\                      构建产物（不入库）：exe 在根，DLL 在 plugins\，示例 ini 在 config\
 ```
 
 ## 快速开始
@@ -62,11 +68,11 @@ HRMonitor\
 （只有 hr-manager 需要，[rustup.rs](https://rustup.rs) 默认选项即可）。
 
 ```cmd
-cmd /c daemon\build.cmd           :: -> build\hr-daemon.exe   (C++, x64)
-cmd /c ab-plugin\build.cmd        :: -> build\HeartRate.dll   (C++, x86, 需要 x86 工具集)
-cmd /c tm-plugin\build.cmd        :: -> build\hr_plugin.dll   (C++, x64)
-cmd /c tools\osd_test\build.cmd   :: -> build\osd_test.exe    (C++, x64)
-cmd /c tools\hr-manager\build.cmd :: -> build\hr-manager.exe  (Rust + WebView2 GUI)
+cmd /c daemon\build.cmd           :: -> build\hr-daemon.exe            (C++, x64)
+cmd /c ab-plugin\build.cmd        :: -> build\plugins\HeartRate.dll    (C++, x86, 需要 x86 工具集)
+cmd /c tm-plugin\build.cmd        :: -> build\plugins\hr_plugin.dll    (C++, x64)
+cmd /c tools\osd_test\build.cmd   :: -> build\osd_test.exe             (C++, x64)
+cmd /c tools\hr-manager\build.cmd :: -> build\hr-manager.exe           (Rust + WebView2 GUI)
 ```
 
 hr-manager 首次构建要联网拉依赖（Cargo.lock 已锁版本），之后可离线重建，其余部分不
@@ -77,11 +83,24 @@ hr-manager 首次构建要联网拉依赖（Cargo.lock 已锁版本），之后�
 DLL。daemon 是 x64 不影响，两边只通过共享内存交换数据。`ab-plugin\build.cmd` 自己用
 `vcvarsall.bat x86` 初始化，末尾用 `dumpbin` 自查架构和三个导出名有没有被修饰。
 
+构建时各组件把版本资源（rc.exe / winresource）链进 PE：版本号来自 `common\version.h`，
+它与 `tools/hr-manager/Cargo.toml` 的 `[package] version` 是跨语言双副本（同 `hr_names.h`
+的同步约定），改版本要两边一起改——打包时 `scripts\pack.ps1` 会校验，不一致直接报错。
+构建目录布局与发行目录一致：exe 和 PDB 在 `build\` 根，两个 DLL 在 `build\plugins\`，
+`hr-manager reset -y` 生成的示例配置在 `build\config\`。
+
 改过共享内存布局后，写端和所有读端要一起重建（daemon + 两个插件 + hr-manager）：记录里
-带 `version` 字段，读端会校验，只换一半读不到数据。
+带 `version` 字段，读端会校验，只换一半读不到数据（这是协议版本 `HRSM_VERSION`，与产品
+版本号是两回事）。
 
 发行版由 [GitHub Actions](.github/workflows/release.yml) 构建：push 到 main 出
-Artifacts，推 `v*` 标签建 Release 并附完整发行包。`tm-plugin\PluginInterface.h` 取自
+Artifacts，推 `v*` 标签建 Release 并附完整发行包。组装/校验/压缩都收在
+`scripts\pack.ps1`，本地打一个同样的包：
+`powershell -ExecutionPolicy Bypass -File scripts\pack.ps1`（产物在 `dist\`）。
+发行目录的根只放 exe 和 README.md，其余各归子目录：`config\`（示例配置）、`docs\`
+（LICENSE、THIRD_PARTY_NOTICES.md）、`plugins\`（两个 DLL）、`scripts\`。运行后生成
+的日志和 WebView2 数据分别落在 `log\`、`webview2\`，根目录不会多出别的东西。
+`tm-plugin\PluginInterface.h` 取自
 TrafficMonitor V1.86，是"反996许可证"，发布前看一眼
 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
 
@@ -110,8 +129,9 @@ daemon 停 15 秒后这一项会变成 `UNAVAILABLE (FLT_MAX)`，是 MAHM 约定
 
 ## 配置
 
-配置全在 `hr-daemon.ini`，和 `hr-daemon.exe` 同目录，UTF-8、带注释，可以直接手改；日常
-入口是 hr-manager 面板（托盘图标 → 打开面板）。不想动 GUI 就用同一个 exe 的 CLI：
+配置全在 `config\hr-daemon.ini`（`hr-daemon.exe` 同级的 `config\` 子目录），UTF-8、带注
+释，可以直接手改；日常入口是 hr-manager 面板（托盘图标 → 打开面板）。不想动 GUI 就用
+同一个 exe 的 CLI：
 
 ```cmd
 build\hr-manager.exe show            :: 列出当前配置
@@ -123,6 +143,7 @@ build\hr-manager.exe start / stop    :: 启动 / 停止 daemon
 build\hr-manager.exe restart         :: 重启 daemon 让改动生效
 build\hr-manager.exe scan [秒数]     :: 扫描附近的心率广播设备（默认 5 秒）
 build\hr-manager.exe path            :: 显示各文件位置
+build\hr-manager.exe version         :: 显示版本号
 build\hr-manager.exe help            :: 全部命令
 build\hr-manager.exe                 :: 不带参数 = 打开面板（--minimized 只出托盘）
 ```
@@ -196,13 +217,15 @@ build\hr-manager.exe restart
 `D:\Program Files\TrafficMonitor`：
 
 ```powershell
-Copy-Item build\hr_plugin.dll "D:\Program Files\TrafficMonitor\plugins\hr_plugin.dll"
 powershell -ExecutionPolicy Bypass -File scripts\configure-trafficmonitor.ps1
 ```
 
-脚本关掉 TrafficMonitor、把 `hr` 加进 `plugin_display_item`、写上 `show_task_bar_wnd=true`，
-再启动它；`-TmDir` 缺省时依次找 ini 里的 `integration.tm_dir` 和常见安装位置，改
-`config.ini` 前先备份成 `config.ini.bak` 并按原编码原子写回。
+脚本会关掉 TrafficMonitor，把插件 `hr_plugin.dll` 替换进 `plugins\`（旧文件留成
+`.bak`，内容相同则跳过），把 `hr` 加进 `plugin_display_item`、写上
+`show_task_bar_wnd=true`，再启动它。插件 DLL 依次从 `<仓库>\build\plugins\`、
+`<仓库>\plugins\`、`<仓库>\` 找，都不在就只改配置并警告（也可用 `-PluginDll` 指定）；
+`-TmDir` 缺省时依次读 `hr-daemon.ini` 的 `integration.tm_dir`（`config\` 里的和旧位置
+的都认）和常见安装位置，改 `config.ini` 前先备份成 `config.ini.bak` 并按原编码原子写回。
 
 插件文件名必须是 `.dll`，不能是 `.tmd`：V1.86 只扫 `plugins\*.dll`
 （`PluginManager.cpp:41`），放 `.tmd` 进去"插件管理"里会是空的，且没有任何报错。插件默认
@@ -223,9 +246,11 @@ cmd /c ab-plugin\build.cmd
 powershell -ExecutionPolicy Bypass -File scripts\deploy-afterburner-plugin.ps1
 ```
 
-脚本把 `HeartRate.dll` 拷进 `<Afterburner>\Plugins\Monitoring\`、写插件说明到
-`Help\Plugins\Monitoring\HeartRate`、在 `Profiles\MSIAfterburner.cfg` 的 `[Monitoring]`
-段写 `HeartRate.dll=1`、确认根配置 `EnablePlugins=1`。全程先关 Afterburner 再改文件
+脚本自己找 `HeartRate.dll`（依次 `<仓库>\build\plugins\`、`<仓库>\plugins\`、`<仓库>\`，
+或用 `-DllPath` 指定）装进 `<Afterburner>\Plugins\Monitoring\`（旧文件留成 `.bak`）、写
+插件说明到 `Help\Plugins\Monitoring\HeartRate`、在 `Profiles\MSIAfterburner.cfg` 的
+`[Monitoring]` 段写 `HeartRate.dll=1`、确认根配置 `EnablePlugins=1`。
+`-AbDir` 缺省时按常见安装位置自动探测。全程先关 Afterburner 再改文件
 （它退出时会把内存里的配置写回 profile），只动自己那一行并留 `.bak`，卸载加 `-Uninstall`。
 它不去改 `Sources=` / `[Source ...]` 段，那是 Afterburner 自己的数据结构。
 
@@ -268,18 +293,22 @@ daemon。旧版本的计划任务（`HuaweiHRDaemon`）已废弃，面板检测�
 
 1.1.3 把全部进程间标识符的前缀从 `HuaWeiHR` 改成了 `BleHR`，包括共享内存
 `Local\BleHR_SM`、单实例互斥体、窗口类名、注册表自启值名 `BleHRManager` 和日志目录
-`%LOCALAPPDATA%\BleHR`。新旧版本的组件互相认不出来，不能混跑，升级时要把
-hr-daemon.exe、hr-manager.exe 和两个插件 DLL 全部换成 1.1.3 的文件，然后跑一次
+`%LOCALAPPDATA%\BleHR`。之后的版本又把文件布局收进了子目录：配置在 `config\`、日志在
+`log\`、插件在 `plugins\`，根目录只放 exe 和 README.md。新旧版本的组件互相认不出来，
+不能混跑，升级时要把 hr-daemon.exe、hr-manager.exe 和两个插件 DLL 全部换成新版文件，
+然后跑一次
 `powershell -ExecutionPolicy Bypass -File scripts\migrate-1.1.3.ps1`。
 
-迁移脚本会停掉正在运行的 daemon 和 manager，把注册表自启值改名为 `BleHRManager`，
-删除旧版计划任务 `HuaweiHRDaemon` 残留，并把日志目录改名为 `BleHR`。脚本可以重复执行。
-这个脚本只随 1.1.3 发行版提供，之后的版本不再附带。全新安装不需要跑它。
+迁移脚本会停掉正在运行的 daemon 和 manager，把注册表自启值改名为 `BleHRManager`，删除
+旧版计划任务 `HuaweiHRDaemon` 残留，把日志目录改名为 `BleHR`，并把根目录的
+`hr-daemon.ini` 移进 `config\`（原位置留 `.bak`）。**这一步必须跑**：新版程序只认
+`config\hr-daemon.ini`，不跑脚本配置会回到默认值（手表地址就丢了）。脚本可以重复执行，
+随发行包的 `scripts\` 目录一起附带；全新安装不需要跑它。
 
 ## hr-daemon 命令行参数
 
 ```
-hr-daemon.exe [--demo] [--address AA:BB:CC:DD:EE:FF] [--scan [秒数]] [--debug] [--quiet] [--help]
+hr-daemon.exe [--demo] [--address AA:BB:CC:DD:EE:FF] [--scan [秒数]] [--debug] [--quiet] [--version] [--help]
 ```
 
 | 参数 | 作用 |
@@ -289,6 +318,7 @@ hr-daemon.exe [--demo] [--address AA:BB:CC:DD:EE:FF] [--scan [秒数]] [--debug]
 | `--scan [秒数]` | 只扫描附近的广播设备，边扫边往 stdout 按行吐 JSON（`device`/`done`），扫完退出 |
 | `--debug` | 连每条心率都写进日志 |
 | `--quiet` | 不附加控制台，日志只写文件（hr-manager 拉起时用） |
+| `--version` | 显示版本号后退出 |
 
 单实例靠互斥体 `Local\BleHR_daemon`，重复启动记一行日志后退出。正常退出（`taskkill`
 不带 `/F`、Ctrl+C、注销、关机）会关掉共享内存映射，正在扫描时也能立刻收手。
@@ -298,8 +328,8 @@ hr-manager 拉起 / restart 出来的 daemon 都带 `--quiet`，不附加控制�
 
 ## 排查
 
-先看日志 `build\hr-daemon.log`（写完即刷盘，可以边跑边看），`.1.log` / `.2.log` 是再往前
-两次的，只留 3 份，里面没有逐条心率值。
+先看日志 `log\hr-daemon.log`（在 exe 同级的 `log\` 子目录，写完即刷盘，可以边跑边看），
+`.1.log` / `.2.log` 是再往前两次的，只留 3 份，里面没有逐条心率值。
 
 | 现象 | 排查 |
 |---|---|
@@ -313,7 +343,7 @@ hr-manager 拉起 / restart 出来的 daemon 都带 `--quiet`，不附加控制�
 | 曲线一直在动，但 OSD 上不显示 | 该项属性里 `Show in On-Screen Display` 没勾；或前台不是 3D 程序（用 `build\osd_test.exe` 当画布）；或 RTSS 没在跑 |
 | 值一直是 `--`，但任务栏正常 | daemon 和 Afterburner 不在同一个会话。用 `tools\mahm-probe\mahm-probe.ps1` 看 MAHM 里那条到底是 `FLT_MAX` 还是有值，能立刻区分"插件没数据"和"OSD 没配" |
 | 任务栏没有 `HR` 项 | 见"显示端 → TrafficMonitor" |
-| 扫描中途把 hr-manager 关掉/杀掉，之后采集一直是停的 | 重开一次 hr-manager（托盘/面板即可）：它看到程序目录里的 `scan-pending` 标记会自动把 hr-daemon 拉回来（标记在扫描停 daemon 前写下、daemon 确认回来后删除） |
+| 扫描中途把 hr-manager 关掉/杀掉，之后采集一直是停的 | 重开一次 hr-manager（托盘/面板即可）：它看到 `config\` 里的 `scan-pending` 标记会自动把 hr-daemon 拉回来（标记在扫描停 daemon 前写下、daemon 确认回来后删除） |
 | TrafficMonitor 悬浮提示显示"版本不匹配" | 新 daemon 配了旧 hr_plugin.dll：共享内存 version 校验拦住了，两边要一起更新 |
 | `hr-manager` 报"既不是 UTF-8 也不是 UTF-16" | 配置文件被存成了别的编码，用记事本另存为 UTF-8，或删掉它让 hr-manager 重建 |
 | 中文乱码 | 只在自编译时可能发生：源码是无 BOM UTF-8，各 `build.cmd` 必须带 `/utf-8` |

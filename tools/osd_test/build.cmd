@@ -39,13 +39,20 @@ if errorlevel 1 (
 
 if not exist "obj" mkdir "obj"
 
+rem --- Version resource: same scheme as the shipping components (common\version.h).
+rc /nologo /Fo"obj\version.res" version.rc
+if errorlevel 1 (
+    echo [osd_test] ERROR: rc.exe failed on version.rc
+    exit /b 1
+)
+
 rem /Fo"obj\\" places the intermediate .obj in obj\ (the trailing double
 rem backslash keeps cl from treating the following argument as the filename).
 rem /W4 /sdl /guard:cf : keep the test tool on the same hardening level as the
 rem shipping components. /utf-8 : repo rule for every C++ compile.
 cl /nologo /std:c++20 /EHsc /O2 /MT /utf-8 /W4 /sdl /guard:cf /DWIN32_LEAN_AND_MEAN /DUNICODE /D_UNICODE ^
    /Fo"obj\\" ^
-   main.cpp /Fe:osd_test.exe /link d3d11.lib dxgi.lib user32.lib
+   main.cpp obj\version.res /Fe:osd_test.exe /link d3d11.lib dxgi.lib user32.lib
 if errorlevel 1 (
     echo [osd_test] ERROR: compile or link failed, no exe produced.
     exit /b 1

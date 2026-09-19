@@ -19,6 +19,7 @@
 #include "../common/hr_config.h"
 #include "../common/hr_names.h"
 #include "../common/hr_shared.h"
+#include "../common/version.h"
 #include "hr_source.h"
 #include "log.h"
 
@@ -37,6 +38,7 @@ struct Options {
     bool               scan        = false;   // --scan：只扫描设备，按行输出 JSON 后退出
     int                scanSec     = 0;       // 0 = 未在命令行给出，用配置里的 scan_timeout_ms
     bool               quiet       = false;   // --quiet：不附加控制台，日志只写文件（hr-manager 拉起时用）
+    bool               version     = false;   // --version：打印版本号后退出
 };
 
 // ---------------------------------------------------------------- 全局状态
@@ -200,6 +202,7 @@ void PrintUsage() {
     LogInfo("                             直连指定手表");
     LogInfo("  hr-daemon.exe --debug      连每条心率都写进日志（平时不写）");
     LogInfo("  hr-daemon.exe --quiet      不附加控制台，日志只写文件（hr-manager 拉起时用）");
+    LogInfo("  hr-daemon.exe --version    显示版本号后退出");
     LogInfo("  hr-daemon.exe --help       显示本帮助");
     LogInfo("");
     LogInfo("  hr-daemon.exe --scan [秒数]");
@@ -209,7 +212,7 @@ void PrintUsage() {
     LogInfo("                             （给 hr-manager 的选表面板用）");
     LogInfo("");
     LogInfo("配置: %s（不存在则用默认值，可改）", ToUtf8(HrDaemonIniPath()).c_str());
-    LogInfo("日志: exe 同目录 hr-daemon.log（写完即刷盘，可边跑边看）。");
+    LogInfo("日志: exe 同级 log\\ 子目录里的 hr-daemon.log（写完即刷盘，可边跑边看）。");
     LogInfo("      每次启动开新的一份，最多留 3 份（.1 .2 是之前几次的）；");
     LogInfo("      单份超过 log.max_kb 也会就地轮转。");
     LogInfo("");
@@ -311,10 +314,11 @@ int Run(HINSTANCE hInst, const Options& opt) {
     }
 
     if (opt.quiet)
-        LogInfo("hr-daemon 已启动（PID %lu），可通过 hr-manager 面板或 hr-manager stop 停止",
-                GetCurrentProcessId());
+        LogInfo("hr-daemon %s 已启动（PID %lu），可通过 hr-manager 面板或 hr-manager stop 停止",
+                HR_VERSION_STRING, GetCurrentProcessId());
     else
-        LogInfo("hr-daemon 已启动（PID %lu），按 Ctrl+C 退出", GetCurrentProcessId());
+        LogInfo("hr-daemon %s 已启动（PID %lu），按 Ctrl+C 退出",
+                HR_VERSION_STRING, GetCurrentProcessId());
 
     // ---- 消息循环
     MSG msg;
@@ -351,6 +355,8 @@ Options ParseArgs(int argc, wchar_t** argv, std::vector<std::string>& warns) {
             o.debug = true;
         } else if (a == L"--quiet") {
             o.quiet = true;
+        } else if (a == L"--version") {
+            o.version = true;
         } else if (a == L"--help" || a == L"-h" || a == L"/?") {
             o.help = true;
         } else if (a == L"--address" || a == L"-a") {
@@ -401,7 +407,13 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, PWSTR, int) {
     LogSetDebug(opt.debug || g_cfg.log_debug);
     LogSetQuiet(opt.quiet);   // 必须赶在 LogInit 之前：它决定要不要附加父控制台
 
-    const std::wstring logPath = LogInit(HrExeDir(), g_cfg.log_max_kb, /*rotate=*/!opt.scan);
+    // 日志进 exe 同级的 log\ 子目录（发行目录的根只放 exe 和 README.md）。
+    // 目录不存在就先建；建不出来（只读目录等）LogInit 自己会兜底到
+    // %LOCALAPPDATA%\BleHR，不用在这里报错。
+    const std::wstring logDir = HrJoinPath(HrExeDir(), L"log");
+    CreateDirectoryW(logDir.c_str(), nullptr);   // 已存在则失败，忽略
+
+    const std::wstring logPath = LogInit(logDir, g_cfg.log_max_kb, /*rotate=*/!opt.scan);
     if (!logPath.empty()) LogInfo("日志文件: %s", ToUtf8(logPath).c_str());
     else                  LogWarn("无法创建日志文件，仅输出到控制台");
     LogInfo("配置文件: %s%s", ToUtf8(iniPath).c_str(),
@@ -410,6 +422,9 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, PWSTR, int) {
     for (const auto& n : notes) LogWarn("配置: %s", ToUtf8(n).c_str());
 
     if (opt.help) { PrintUsage(); LogShutdown(); return 0; }
+
+    // 版本号来自 common\version.h（与 hr-manager 的 Cargo.toml 双副本同步）。
+    if (opt.version) { LogInfo("hr-daemon %s", HR_VERSION_STRING); LogShutdown(); return 0; }
 
     // 命令行显式给了 --address 但没能用上（缺参数/格式错）：拒绝启动。
     // 静默回退去连配置里的旧手表，用户会以为连的是新指定的那台——更糟。

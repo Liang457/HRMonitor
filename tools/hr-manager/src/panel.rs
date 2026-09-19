@@ -28,7 +28,13 @@ pub fn open(
         .map_err(|e| format!("创建窗口失败：{}", e))?;
 
     let core2 = core.clone();
-    let builder = wry::WebViewBuilder::new()
+    // WebView2 的用户数据目录显式指到 exe 同级 webview2\：不指定的话 WebView2
+    // Runtime 会在 exe 旁自建 hr-manager.exe.WebView2\，而发行目录的根要保持
+    // 只有 exe 和 README.md。目录先建出来。
+    let webview_data_dir = crate::config::exe_dir().join("webview2");
+    let _ = std::fs::create_dir_all(&webview_data_dir);
+    let mut web_context = wry::WebContext::new(Some(webview_data_dir));
+    let builder = wry::WebViewBuilder::new_with_web_context(&mut web_context)
         .with_html(include_str!("assets/index.html"))
         .with_ipc_handler(move |req: wry::http::Request<String>| {
             let body = req.body().clone();

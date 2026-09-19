@@ -33,7 +33,7 @@ impl Tray {
         let _ = menu.append(&tray_icon::menu::MenuItem::with_id(ID_QUIT, "退出", true, None));
 
         let icon = tray_icon::TrayIconBuilder::new()
-            .with_tooltip("BLE 心率 —— hr-manager")
+            .with_tooltip(concat!("BLE 心率 —— hr-manager v", env!("CARGO_PKG_VERSION")))
             .with_icon(heart_icon()?)
             .with_menu(Box::new(menu))
             .with_menu_on_left_click(false)

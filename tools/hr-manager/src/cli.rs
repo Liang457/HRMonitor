@@ -46,6 +46,7 @@ pub fn run(args: &[String]) -> i32 {
             },
         },
         "path" => cmd_path(),
+        "version" | "--version" | "-V" | "-v" => cmd_version(),
         "help" | "--help" | "-h" | "/?" => {
             usage();
             0
@@ -74,6 +75,7 @@ fn usage() {
   hr-manager restart             重启 hr-daemon，让改动生效
   hr-manager scan [秒数]         扫描附近的心率广播设备（默认 5 秒）
   hr-manager path                显示各文件位置
+  hr-manager version             显示版本号
   hr-manager help                显示本帮助
 
 配置项（hr-manager show 也会列出来）:
@@ -262,7 +264,13 @@ fn cmd_path() -> i32 {
     println!("配置文件 : {}", config::ini_path().display());
     println!("程序目录 : {}", config::exe_dir().display());
     println!("daemon   : {}", ctl::daemon_path().display());
-    println!("日志     : {}", config::exe_dir().join("hr-daemon.log").display());
+    println!("日志     : {}", config::exe_dir().join("log").join("hr-daemon.log").display());
+    0
+}
+
+fn cmd_version() -> i32 {
+    // 版本来自 Cargo.toml 的 [package] version（与 common\version.h 双副本同步）
+    println!("hr-manager {}", env!("CARGO_PKG_VERSION"));
     0
 }
 

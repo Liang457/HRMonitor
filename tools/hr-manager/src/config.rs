@@ -387,6 +387,15 @@ pub fn write_ini(path: &Path, body: &str) -> Result<(), String> {
     static TMP_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let seq = TMP_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
+    // config\ 子目录可能还不存在（新部署的首次保存/reset）：先建，别让
+    // 临时文件创建失败把人引到一条看不懂的 IO 错误上。
+    if let Some(parent) = path.parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| format!("创建目录 {} 失败：{}", parent.display(), e))?;
+        }
+    }
+
     let mut bytes = Vec::with_capacity(body.len() + 3);
     bytes.extend_from_slice(&[0xEF, 0xBB, 0xBF]);
     bytes.extend_from_slice(body.as_bytes());
@@ -480,7 +489,11 @@ fn exe_dir_uncached() -> Option<PathBuf> {
 }
 
 pub fn ini_path() -> PathBuf {
-    exe_dir().join("hr-daemon.ini")
+    // 配置在 exe 同级 config\ 子目录（发行目录的根只放 exe 和 README.md）。
+    // 故意不做旧位置（exe 旁）的回退读取：两处都读会出现"改了这份没生效"
+    // 的分裂状态。旧 ini 由发行包里的 scripts\migrate-1.1.3.ps1 一次性移入
+    // config\（留 .bak），脚本幂等。
+    exe_dir().join("config").join("hr-daemon.ini")
 }
 
 // ---------------------------------------------------------------- 载入/保存（CLI 与 GUI 共用）

@@ -1,0 +1,4 @@
+// ab-plugin\version.rc - HeartRate.dll 的版本资源壳。
+#define HR_BIN_DESC "HeartRate - MSI Afterburner monitoring plugin (BLE heart rate)"
+#define HR_FILETYPE 0x2L
+#include "..\common\version.rc.in"

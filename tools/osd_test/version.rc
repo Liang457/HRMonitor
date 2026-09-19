@@ -1,0 +1,4 @@
+// tools\osd_test\version.rc - osd_test.exe 的版本资源壳。
+#define HR_BIN_DESC "osd_test - shared memory / OSD rendering test tool"
+#define HR_FILETYPE 0x1L
+#include "..\..\common\version.rc.in"

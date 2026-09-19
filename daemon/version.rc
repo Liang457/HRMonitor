@@ -1,0 +1,4 @@
+// daemon\version.rc - hr-daemon.exe 的版本资源壳。
+#define HR_BIN_DESC "hr-daemon - BLE heart rate service"
+#define HR_FILETYPE 0x1L
+#include "..\common\version.rc.in"

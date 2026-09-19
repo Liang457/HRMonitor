@@ -10,20 +10,25 @@ BLE 心率广播设备（服务 `0x180D`，手表、手环等）→ Windows：`h
 无测试套件，验证 = 构建 + demo 模拟源 + 探针：
 
 ```cmd
-cmd /c daemon\build.cmd           :: build\hr-daemon.exe   (C++, x64)
-cmd /c ab-plugin\build.cmd        :: build\HeartRate.dll   (C++, x86，必须 x86)
-cmd /c tm-plugin\build.cmd        :: build\hr_plugin.dll   (C++, x64)
-cmd /c tools\osd_test\build.cmd   :: build\osd_test.exe    (C++, x64)
-cmd /c tools\hr-manager\build.cmd :: build\hr-manager.exe  (Rust，GUI 栈依赖见下)
+cmd /c daemon\build.cmd           :: build\hr-daemon.exe             (C++, x64)
+cmd /c ab-plugin\build.cmd        :: build\plugins\HeartRate.dll     (C++, x86，必须 x86)
+cmd /c tm-plugin\build.cmd        :: build\plugins\hr_plugin.dll     (C++, x64)
+cmd /c tools\osd_test\build.cmd   :: build\osd_test.exe              (C++, x64)
+cmd /c tools\hr-manager\build.cmd :: build\hr-manager.exe            (Rust，GUI 栈依赖见下)
 ```
 
-- C++ 的 build.cmd 用 vswhere 自动定位 MSVC（不绑死 VS 版本），产物统一落 `build\`（已 gitignore）。
+- C++ 的 build.cmd 用 vswhere 自动定位 MSVC（不绑死 VS 版本）；exe/PDB 落 `build\` 根、
+  两个 DLL 落 `build\plugins\`（已 gitignore，布局与发行目录一致）。
   编译统一带 `/W4 /sdl /guard:cf /Zi`（PDB 落 `build\`，崩溃转储要靠它符号化），保持零警告；
   两个插件的 build.cmd 末尾有 dumpbin 自查（机器码架构 + 未修饰导出名），改了导出签名先想过这关。
+  每个组件还链一份版本资源：各自的 version.rc 壳 → `common\version.rc.in`，rc.exe 编译。
 - C++ 全部 `/MT` 静态 CRT，目标机器不装 VC++ 运行库。
 - 不用手表即可验证整条链路：`build\hr-manager.exe set demo 1 && build\hr-manager.exe restart`，
   然后 `pwsh -File tools\mahm-probe\mahm-probe.ps1 -Filter Heart` 看 Afterburner 共享内存里的值；
   hr-manager 面板的状态卡也应显示模拟心率。
+- 发行打包：`powershell -ExecutionPolicy Bypass -File scripts\pack.ps1`（CI 的
+  release.yml 也调它）——校验两处版本号一致，把 build\ 组装成发行布局（根只放 exe 和
+  README.md，config/docs/plugins/scripts 各归子目录），压 zip 到 dist\。
 
 ## 架构边界（改代码前必读）
 
@@ -38,6 +43,16 @@ cmd /c tools\hr-manager\build.cmd :: build\hr-manager.exe  (Rust，GUI 栈依赖
   `tools/hr-manager/src/config.rs` 是 Rust 写端副本：键名/注释/钳位必须与 C++ 读端保持一致。
 - `common/hr_names.h` 与 `tools/hr-manager/src/names.rs` 是一对跨语言常量副本
   （daemon 互斥体名、窗口类名）——改任何一个必须两边同步。
+- `common/version.h` 与 `tools/hr-manager/Cargo.toml` 的 `[package] version` 是产品版本号的
+  跨语言双副本——改版本必须两边同步；`scripts\pack.ps1` 打包时强制校验一致（HEAD 带 v* 标签
+  时连标签一起校验）。各 exe/DLL 的 PE 版本资源、daemon `--version`、hr-manager
+  `version` 子命令、面板底部与托盘提示都从这里取。它与 `hr_shared.h` 的 `HRSM_VERSION`
+  （共享内存协议版本）是两回事，别混着改。
+- **运行期文件布局**（发行目录的根只放 exe 和 README.md，全部相对 exe 所在目录）：配置
+  `config\hr-daemon.ini`、日志 `log\hr-daemon.log(.1/.2)`、WebView2 数据 `webview2\`、
+  扫描恢复标记 `config\scan-pending`。程序只认新路径、**不做旧位置回退**（C++ 侧
+  `HrDaemonIniPath()`、Rust 侧 `config::ini_path()`）；老部署的根目录 hr-daemon.ini 由
+  `scripts\migrate-1.1.3.ps1` 一次性搬进 config\（留 .bak），别在程序里加"搬家"逻辑。
 - **daemon 是唯一的蓝牙入口**：连接/重连/扫描全在 `daemon/ble.cpp`（C++/WinRT，链接
   windowsapp.lib）。`--scan` 按行往 stdout 吐 JSON（`{"type":"device",...}`/`{"type":"done",...}`），
   hr-manager 起子进程读流，自己不碰蓝牙。
@@ -46,7 +61,8 @@ cmd /c tools\hr-manager\build.cmd :: build\hr-manager.exe  (Rust，GUI 栈依赖
   状态、调度扫描、管理开机自启（注册表 Run 键）。面板关闭即整体销毁 WebView2（内存回落），
   托盘进程本身保留。
 - **依赖策略：业务代码不引第三方**。C++ 只用 Windows SDK（BLE 用自带 C++/WinRT）。Rust 端
-  唯一例外是 hr-manager 的 GUI 栈（wry + tao + tray-icon + serde/serde_json），Cargo.lock 锁
+  仅有的例外是 hr-manager 的 GUI 栈（wry + tao + tray-icon + serde/serde_json）和构建期
+  专用的 winresource（build.rs 嵌 PE 版本信息，不进运行时），Cargo.lock 锁
   版本，首次构建需联网；其余（配置/进程/注册表/共享内存/管道）全部是 `src/win.rs` 手写
   `extern "system"` 声明。**不要再扩大依赖面，也不要引 npm/前端构建链**（面板是
   `include_str!` 嵌入的零依赖原生 HTML/CSS/JS 单页）。
@@ -76,7 +92,7 @@ cmd /c tools\hr-manager\build.cmd :: build\hr-manager.exe  (Rust，GUI 栈依赖
 - **扫描前必须停 daemon**（手表被连着时不广播），停启编排在 `tools/hr-manager/src/scan_job.rs`：
   取消/失败路径要把 daemon 拉回来；正常扫完保持停止等选表，用户放弃时（面板关闭/点放弃）
   再拉回——`Core::scan_needs_restore` 是**粘滞标志**（只在实际恢复成功处清零，扫描线程开头
-  不许清），配合 `scan-pending` 标记文件（停 daemon 前写、确认回来后删，manager 启动时看到
+  不许清），配合 `config\scan-pending` 标记文件（停 daemon 前写、确认回来后删，manager 启动时看到
   就自动恢复）兜住"扫描中途 manager 被杀"。扫描线程阻塞在读管道上，取消必须
   置位 + kill 子进程双管齐下；`--scan` 子进程被 Job Object（KILL_ON_JOB_CLOSE）拴着，
   manager 死则子进程必死。

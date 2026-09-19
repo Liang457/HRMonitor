@@ -23,6 +23,7 @@
 
 #include "../common/hr_shared.h"
 #include "../common/hr_config.h"
+#include "../common/version.h"
 
 #pragma warning(push, 0)   // 第三方头（Anti-996 许可，见 THIRD_PARTY_NOTICES.md），不受 /W4 管
 #include "PluginInterface.h"
@@ -175,7 +176,7 @@ public:
         case TMI_DESCRIPTION: return L"通过蓝牙接收心率广播，显示实时心率";
         case TMI_AUTHOR:      return L"Cool-GK";
         case TMI_COPYRIGHT:   return L"MIT License";
-        case TMI_VERSION:     return L"1.0.0";
+        case TMI_VERSION:     return HR_VERSION_WSTRING;   // common\version.h，别再手写字符串
         case TMI_URL:         return L"https://github.com/Liang457/HRMonitor";
         default:              return L"";
         }

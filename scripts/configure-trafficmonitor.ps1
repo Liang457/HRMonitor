@@ -1,6 +1,8 @@
 ﻿# scripts/configure-trafficmonitor.ps1
 #
-# 把本插件的"心率"项目放进 TrafficMonitor 的显示列表。
+# 部署本插件（hr_plugin.dll）并把"心率"项目放进 TrafficMonitor 的显示列表。
+# 插件 DLL 会拷贝/替换进 <TrafficMonitor>\plugins\（旧版留成 .bak，SHA256
+# 相同则跳过）；找得到 TrafficMonitor 却找不到插件来源时只改配置并警告。
 #
 # 背景（V1.86 实测）：
 #   * 插件 DLL 要放在 <TrafficMonitor.exe 同级>\plugins\ 下，文件名任意，扩展名必须是
@@ -24,6 +26,8 @@
 # 参数：
 #   -TmDir <路径>       TrafficMonitor 安装目录
 #                       （不传就读 hr-daemon.ini 的 integration.tm_dir，再猜几个常见位置）
+#   -PluginDll <路径>   要部署的插件 DLL 来源（缺省依次找
+#                       <仓库>\build\plugins\、<仓库>\plugins\、<仓库>\ 下的 hr_plugin.dll）
 #   -ItemId <id>        要显示的插件项目 id（默认 hr）
 #   -HideMainWindow     顺便把悬浮主窗口隐藏（只要任务栏显示时用）
 #   -KeepRunning        改完不重启 TrafficMonitor（下次启动才生效）
@@ -31,6 +35,7 @@
 [CmdletBinding()]
 param(
     [string]$TmDir = '',
+    [string]$PluginDll = '',
     [string]$ItemId = 'hr',
     [switch]$HideMainWindow,
     [switch]$KeepRunning
@@ -42,9 +47,8 @@ $ErrorActionPreference = 'Stop'
 # 以前这里写死一个本机路径，等于仓库里带着别人的机器布局。改成：显式参数 ->
 # hr-daemon.ini 的 integration.tm_dir -> 挨个试常见位置。
 
-function Get-HrIniTmDir {
-    $ini = Join-Path (Split-Path -Parent $PSScriptRoot) 'build\hr-daemon.ini'
-    if (-not (Test-Path -LiteralPath $ini)) { return $null }
+# 从一份 hr-daemon.ini 里读 integration.tm_dir（只读，不动文件）。
+function Read-TmDirFromIni([string]$ini) {
     $sec = ''
     foreach ($line in [System.IO.File]::ReadAllLines($ini, [System.Text.Encoding]::UTF8)) {
         $t = $line.Trim()
@@ -59,6 +63,27 @@ function Get-HrIniTmDir {
         if ($t.Substring(0, $i).Trim() -ne 'tm_dir') { continue }
         $v = $t.Substring($i + 1).Trim()
         if ($v) { return $v }
+    }
+    return $null
+}
+
+function Get-HrIniTmDir {
+    # hr-daemon.ini 可能在三处：发行/部署布局的 config\ 子目录、更早部署布局的
+    # 仓库根、开发布局的 build\config\（再往前是 build\ 根）。找到谁算谁。
+    $root = Split-Path -Parent $PSScriptRoot
+    foreach ($ini in @(
+            (Join-Path $root 'config\hr-daemon.ini'),
+            (Join-Path $root 'hr-daemon.ini'),
+            (Join-Path $root 'build\config\hr-daemon.ini'),
+            (Join-Path $root 'build\hr-daemon.ini')
+        )) {
+        if (Test-Path -LiteralPath $ini) {
+            $v = Read-TmDirFromIni $ini
+            if ($v) {
+                Write-Host "[tm] 目录取自 $ini"
+                return $v
+            }
+        }
     }
     return $null
 }
@@ -152,13 +177,54 @@ function Write-TextAtomic([string]$path, [string]$text, [System.Text.Encoding]$e
     Write-Host "[tm] 已写入 $path（旧文件备份为 $name.bak）"
 }
 
-# --- 0. 先确认插件 DLL 在位
-$plugin = Join-Path $TmDir 'plugins\hr_plugin.dll'
-if (Test-Path -LiteralPath $plugin) {
-    Write-Host "[tm] 插件: $plugin"
+# --- 部署插件 DLL：临时文件 + 原子替换，旧文件留成 .bak -----------------------
+# 旧版插件留在 plugins\ 会一路读不到数据（共享内存布局/版本对不上），所以
+# 来源 DLL 找得到就一定替换。临时名不带 .dll 后缀，宿主扫 plugins\*.dll 不会
+# 把半成品加载进去。目标被占用（TrafficMonitor 没关干净，多半提权跑着）时给
+# 一句人话，而不是裸的 IO 异常。
+function Deploy-HrDll([string]$src, [string]$dst) {
+    $dir = Split-Path -Parent $dst
+    if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Force -Path $dir | Out-Null }
+    $tmp = Join-Path $dir 'hr_plugin.dll.tmp'
+    $bak = Join-Path $dir 'hr_plugin.dll.bak'
+    try {
+        Copy-Item -LiteralPath $src -Destination $tmp -Force
+        if (Test-Path -LiteralPath $dst) {
+            [System.IO.File]::Replace($tmp, $dst, $bak)   # 原子替换，旧文件留成 .bak
+        } else {
+            Move-Item -LiteralPath $tmp -Destination $dst
+        }
+        Write-Host "[tm] 已部署 $dst（旧文件留为 hr_plugin.dll.bak）"
+    } catch {
+        Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue
+        throw ("部署插件 DLL 失败：$dst —— TrafficMonitor 可能没被关掉（提权运行？）。" +
+               "请先手动退出 TrafficMonitor，或用【以管理员身份运行】的 PowerShell 再跑。")
+    }
+}
+
+# --- 0. 解析插件 DLL 来源（找得到就部署替换，找不到就只改配置并警告）
+# 来源优先级：显式 -PluginDll -> <仓库>\build\plugins\（开发布局，build.cmd 的
+# 落点）-> <仓库>\plugins\（发行/部署布局）-> <仓库>\（更早的部署布局）。
+$RepoRoot  = Split-Path -Parent $PSScriptRoot
+$targetDll = Join-Path $TmDir 'plugins\hr_plugin.dll'
+$srcDll    = $PluginDll
+if (-not $srcDll) {
+    foreach ($c in @(
+            (Join-Path $RepoRoot 'build\plugins\hr_plugin.dll'),
+            (Join-Path $RepoRoot 'plugins\hr_plugin.dll'),
+            (Join-Path $RepoRoot 'hr_plugin.dll')
+        )) {
+        if (Test-Path -LiteralPath $c) { $srcDll = $c; break }
+    }
+}
+if ($srcDll) {
+    Write-Host "[tm] 插件来源: $srcDll"
 } else {
-    Write-Warning "没找到 $plugin —— 先构建并拷过去：cmd /c tm-plugin\build.cmd"
-    Write-Warning "现在继续的话，显示列表里会留下一个没有对应插件的 'hr' 项。"
+    Write-Warning ("没找到插件 DLL 来源（试过 -PluginDll、<仓库>\build\plugins\、<仓库>\plugins\、<仓库>\），" +
+                   "不动 $targetDll。先构建：cmd /c tm-plugin\build.cmd，或用 -PluginDll 指定。")
+    if (-not (Test-Path -LiteralPath $targetDll)) {
+        Write-Warning "目标位置也没有插件 —— 现在继续的话，显示列表里会留下一个没有对应插件的 'hr' 项。"
+    }
 }
 
 # --- 1. 关掉 TrafficMonitor，否则它退出时会覆盖我们的改动
@@ -182,6 +248,25 @@ if ($wasRunning) {
     if ($proc.Count -gt 0) {
         $proc | Stop-Process -Force
         Start-Sleep -Milliseconds 500
+        $proc = @(Get-Process -Name 'TrafficMonitor' -ErrorAction SilentlyContinue | Where-Object {
+            $p = $null
+            try { $p = $_.Path } catch { }
+            (-not $p) -or ($p -ieq $exe)
+        })
+        if ($proc.Count -gt 0) {
+            throw "关不掉 TrafficMonitor —— 它多半以更高权限运行。请先手动退出（右键通知区图标 -> 退出）再跑本脚本。"
+        }
+    }
+}
+
+# --- 1.5 部署/替换插件 DLL（TrafficMonitor 已关，文件没被锁）
+if ($srcDll) {
+    if ((Test-Path -LiteralPath $targetDll) -and
+        ((Get-FileHash -LiteralPath $srcDll -Algorithm SHA256).Hash -eq
+         (Get-FileHash -LiteralPath $targetDll -Algorithm SHA256).Hash)) {
+        Write-Host "[tm] 插件已是同一份，跳过: $targetDll"
+    } else {
+        Deploy-HrDll $srcDll $targetDll
     }
 }
 
@@ -240,4 +325,5 @@ if ($wasRunning -and -not $KeepRunning) {
 
 Write-Host ''
 Write-Host '完成。任务栏上应该能看到 "HR 130" 这样的项目（<15 秒没数据时显示 "HR --"）。'
+Write-Host '数值一直 "--" 的话：确认 hr-daemon.exe 在跑（hr-manager 面板或 build\hr-daemon.exe --demo）。'
 Write-Host '调整位置/字体/顺序：右键任务栏上的该项 -> 显示设置；或右键通知区图标 -> 选项设置。'

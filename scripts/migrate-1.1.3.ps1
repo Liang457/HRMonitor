@@ -1,6 +1,7 @@
-# scripts/migrate-1.1.3.ps1
-# 从 1.1.2 及更早版本迁移到 1.1.3。
-# 1.1.3 把全部进程间标识符从 HuaWeiHR 前缀改为 BleHR 前缀：
+﻿# scripts/migrate-1.1.3.ps1
+# 一次性升级迁移脚本，随发行包（scripts\）一起分发，可重复执行（幂等）。
+# 目前的迁移内容：
+# ① 1.1.3：进程间标识符 HuaWeiHR 前缀 → BleHR 前缀：
 #   共享内存  Local\HuaWeiHR_SM         → Local\BleHR_SM
 #   互斥体    Local\HuaWeiHR_daemon     → Local\BleHR_daemon
 #             Local\HuaWeiHR_manager    → Local\BleHR_manager
@@ -8,9 +9,11 @@
 #   窗口类    HuaWeiHRDaemonWnd         → BleHRDaemonWnd
 #   注册表 Run 值名 HuaWeiHRManager     → BleHRManager
 #   日志目录  %LOCALAPPDATA%\HuaWeiHR   → %LOCALAPPDATA%\BleHR
+# ② 配置搬家：hr-daemon.ini 从 exe 旁挪进 config\ 子目录（发行目录的根
+#   只放 exe 和 README.md，配置/日志/插件各归子目录）。新版程序只认
+#   config\hr-daemon.ini，故意不做旧位置回退（迁移一次的事不进常驻代码），
+#   所以升级换完文件后必须先跑一次本脚本，否则配置会回到默认值。
 # 新旧版本的组件混跑互认不了，升级必须整体更换全部文件后再跑本脚本。
-# 本脚本只随 1.1.3 发行版提供，之后的版本不再附带。
-# 幂等：重复执行不报错，已迁移的项目会跳过。
 #
 #     powershell -ExecutionPolicy Bypass -File scripts\migrate-1.1.3.ps1
 
@@ -36,6 +39,28 @@ foreach ($proc in 'hr-daemon', 'hr-manager') {
     } else {
         Write-Host "[process] $proc.exe 未在运行。"
     }
+}
+
+# --- 配置搬家：hr-daemon.ini 从 exe 旁挪进 config\ 子目录。
+# 新版程序只认 config\hr-daemon.ini（旧位置不回退读取），升级后必须跑本脚本，
+# 否则 daemon/manager 会用默认配置（表现为：手表地址丢了，连不上）。
+# 复制到新位置、原文件改名留作 .bak，两边都有内容时以 config\ 为准不动旧文件。
+$iniOld = Join-Path $Root 'hr-daemon.ini'
+$iniNew = Join-Path $Root 'config\hr-daemon.ini'
+if ((Test-Path -LiteralPath $iniOld) -and -not (Test-Path -LiteralPath $iniNew)) {
+    New-Item -ItemType Directory -Path (Join-Path $Root 'config') -Force | Out-Null
+    Copy-Item -LiteralPath $iniOld -Destination $iniNew
+    Move-Item -LiteralPath $iniOld -Destination ($iniOld + '.bak') -Force
+    Write-Host '[ini] hr-daemon.ini 已移入 config\（原位置留了 hr-daemon.ini.bak）'
+    $did = $true
+} elseif (Test-Path -LiteralPath $iniNew) {
+    if (Test-Path -LiteralPath $iniOld) {
+        Write-Warning 'config\hr-daemon.ini 已存在，根目录的 hr-daemon.ini 没有动（两边可能不一样，请自行比对后删掉旧文件）。'
+    } else {
+        Write-Host '[ini] 配置已在 config\ 里，跳过。'
+    }
+} else {
+    Write-Host '[ini] 没有旧配置文件，跳过（首次在面板里保存配置时会自动生成）。'
 }
 
 # --- 注册表 Run 值改名。
@@ -88,5 +113,5 @@ if (Test-Path -LiteralPath $OldLog) {
 
 if (-not $did) { Write-Host '没有需要迁移的内容。' }
 Write-Host ''
-Write-Host '迁移完成。请确认全部组件（hr-daemon.exe、hr-manager.exe、两个插件 DLL）'
-Write-Host '都已换成 1.1.3 的文件，然后启动 hr-manager.exe 即可。'
+Write-Host '迁移完成。请确认全部组件（hr-daemon.exe、hr-manager.exe、plugins\ 下两个 DLL）'
+Write-Host '都已换成新版文件，然后启动 hr-manager.exe 即可。'

@@ -27,7 +27,7 @@ if not exist "%EXE%" (
 )
 
 echo [run] %CD%\%EXE% %*
-echo [run] log file: %CD%\build\hr-daemon.log
+echo [run] log file: %CD%\build\log\hr-daemon.log
 echo [run] Ctrl+C to stop.
 echo.
 

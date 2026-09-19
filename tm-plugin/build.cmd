@@ -42,6 +42,15 @@ if errorlevel 1 (
 rem Keep intermediates inside obj\ so the tree stays tidy.
 if not exist "obj" mkdir "obj"
 
+rem --- Version resource: common\version.h is the single version source (dual-copy
+rem --- with Cargo.toml, verified by scripts\pack.ps1). rc.exe is on PATH after
+rem --- vcvars64 initializes the SDK environment.
+rc /nologo /Fo"obj\version.res" version.rc
+if errorlevel 1 (
+    echo [build] ERROR: rc.exe failed on version.rc
+    exit /b 1
+)
+
 echo [build] compiling plugin.cpp ...
 rem /LD    : build a DLL (this is what TrafficMonitor loads)
 rem /MT    : static CRT, so no VC++ redistributable is needed
@@ -53,7 +62,7 @@ rem /Zi    : PDB next to the DLL for crash symbolization.
 rem hr_config.cpp provides the hr_plugin.ini reading (display label / item name).
 rem /INCREMENTAL:NO keeps the export table clean (no @ILT thunks), so the
 rem self-check below can anchor the export name at end-of-line.
-cl /nologo /LD /O2 /MT /EHsc /std:c++20 /utf-8 /W4 /sdl /guard:cf /Zi /DUNICODE /D_UNICODE /DWIN32_LEAN_AND_MEAN /I..\common /Foobj\ plugin.cpp ..\common\hr_config.cpp /Fe:hr_plugin.dll /link /INCREMENTAL:NO /EXPORT:TMPluginGetInstance
+cl /nologo /LD /O2 /MT /EHsc /std:c++20 /utf-8 /W4 /sdl /guard:cf /Zi /DUNICODE /D_UNICODE /DWIN32_LEAN_AND_MEAN /I..\common /Foobj\ plugin.cpp ..\common\hr_config.cpp obj\version.res /Fe:hr_plugin.dll /link /INCREMENTAL:NO /EXPORT:TMPluginGetInstance
 if errorlevel 1 (
     echo [build] ERROR: compile/link failed
     exit /b 1
@@ -82,15 +91,17 @@ if exist "hr_plugin.exp" del /q "hr_plugin.exp"
 if exist "hr_plugin.lib" del /q "hr_plugin.lib"
 if exist "vc140.pdb"     del /q "vc140.pdb"
 
-rem Also place a copy under the repo build\ directory.
-if not exist "..\build" mkdir "..\build"
-copy /y "hr_plugin.dll" "..\build\hr_plugin.dll" >nul
+rem Also place a copy under the repo build\plugins\ directory (release layout:
+rem the repo root keeps only the exes and README.md); the deploy script and
+rem scripts\pack.ps1 both look there.
+if not exist "..\build\plugins" mkdir "..\build\plugins"
+copy /y "hr_plugin.dll" "..\build\plugins\hr_plugin.dll" >nul
 if errorlevel 1 (
-    echo [build] ERROR: cannot copy to ..\build\hr_plugin.dll -- the file may be in use by TrafficMonitor
+    echo [build] ERROR: cannot copy to ..\build\plugins\hr_plugin.dll -- the file may be in use by TrafficMonitor
     exit /b 1
 )
 
 echo [build] OK: %~dp0hr_plugin.dll  - x64, export TMPluginGetInstance
-echo [build] OK: %~dp0..\build\hr_plugin.dll
+echo [build] OK: %~dp0..\build\plugins\hr_plugin.dll
 endlocal
 exit /b 0

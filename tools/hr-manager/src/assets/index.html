@@ -367,7 +367,7 @@ function refreshMeta() {
     fillForm(r.config);
     $("chkAutostart").checked = !!r.autostart;
     $("oldTaskBanner").hidden = !r.oldTask;
-    $("paths").textContent = "配置：" + r.iniPath + (r.iniExists ? "" : "（不存在，用默认值）") + " · daemon：" + r.daemonExe;
+    $("paths").textContent = "hr-manager v" + r.version + " · 配置：" + r.iniPath + (r.iniExists ? "" : "（不存在，用默认值）") + " · daemon：" + r.daemonExe;
   });
 }
 

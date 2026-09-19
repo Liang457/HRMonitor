@@ -48,7 +48,9 @@ pub struct ScanOutcome {
 /// manager 在扫描中途死掉（崩溃/被结束）时，daemon 会留在停止态——下次
 /// manager 启动看到这个标记就自动把 daemon 拉回来。
 fn marker_path() -> std::path::PathBuf {
-    crate::config::exe_dir().join("scan-pending")
+    // 放 config\ 子目录而不是 exe 旁：发行目录的根只放 exe 和 README.md，
+    // 运行期产物（配置/日志/这个标记）一律进子目录。
+    crate::config::exe_dir().join("config").join("scan-pending")
 }
 
 fn write_marker() {

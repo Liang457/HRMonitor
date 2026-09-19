@@ -1,0 +1,56 @@
+// common\version.rc.in - shared VERSIONINFO template (ASCII only, on purpose:
+// rc.exe resolves .rc files by the console codepage the same way cmd does).
+//
+// How to use: each component keeps a tiny version.rc that defines its own
+// HR_BIN_DESC (one-line description) and HR_FILETYPE (0x1L = VFT_APP,
+// 0x2L = VFT_DLL), then includes this file:
+//
+//     #define HR_BIN_DESC "hr-daemon - BLE heart rate service"
+//     #define HR_FILETYPE 0x1L
+//     #include "..\common\version.rc.in"
+//
+// and the build.cmd compiles it before linking:
+//
+//     rc /nologo /Fo"obj\version.res" version.rc
+//
+// Version numbers come from common\version.h - the C++ side of the dual-copy
+// pair with tools/hr-manager/Cargo.toml. scripts\pack.ps1 verifies the two
+// agree before packaging, so a forgotten sync fails loudly instead of
+// shipping binaries that disagree about their own version.
+#include "version.h"
+
+#ifndef VS_VERSION_INFO
+#define VS_VERSION_INFO 1
+#endif
+#ifndef HR_FILETYPE
+#define HR_FILETYPE 0x1L
+#endif
+
+VS_VERSION_INFO VERSIONINFO
+ FILEVERSION    HR_VERSION_MAJOR,HR_VERSION_MINOR,HR_VERSION_PATCH,0
+ PRODUCTVERSION HR_VERSION_MAJOR,HR_VERSION_MINOR,HR_VERSION_PATCH,0
+ FILEFLAGSMASK  0x3fL
+ FILEFLAGS      0x0L
+ FILEOS         0x40004L
+ FILETYPE       HR_FILETYPE
+ FILESUBTYPE    0x0L
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        // 040904b0 = U.S. English + Unicode (1200). Strings above are ASCII,
+        // so this block survives any machine codepage unchanged.
+        BLOCK "040904b0"
+        BEGIN
+            VALUE "CompanyName",     "HRMonitor"
+            VALUE "FileDescription", HR_BIN_DESC
+            VALUE "FileVersion",     HR_VERSION_STRING
+            VALUE "ProductName",     "HRMonitor"
+            VALUE "ProductVersion",  HR_VERSION_STRING
+            VALUE "LegalCopyright",  "MIT License"
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x409, 1200
+    END
+END

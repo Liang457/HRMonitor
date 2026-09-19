@@ -37,6 +37,15 @@ if errorlevel 1 (
 
 if not exist obj mkdir obj
 
+REM --- Version resource: common\version.h is the single version source
+REM     (dual-copy with tools/hr-manager/Cargo.toml; scripts\pack.ps1 verifies
+REM     the pair agrees before packaging). rc.exe is on PATH after vcvars.
+rc /nologo /Fo"obj\version.res" version.rc
+if errorlevel 1 (
+    echo [ERROR] rc.exe failed on version.rc
+    exit /b 1
+)
+
 REM /utf-8 : sources are UTF-8, without it MSVC reads them as the system codepage
 REM          and the Chinese log strings come out as mojibake.
 REM /MT    : static CRT, so the exe runs without a VC++ redistributable.
@@ -46,7 +55,7 @@ cl /nologo /std:c++20 /EHsc /O2 /MT /utf-8 /W4 /sdl /guard:cf /Zi ^
    /DUNICODE /D_UNICODE /DWIN32_LEAN_AND_MEAN /DNOMINMAX /D_WIN32_WINNT=0x0A00 ^
    /I"..\common" ^
    /Fo"obj\\" ^
-   main.cpp log.cpp demo.cpp ble.cpp ..\common\hr_config.cpp ^
+   main.cpp log.cpp demo.cpp ble.cpp ..\common\hr_config.cpp obj\version.res ^
    /Fe:hr-daemon.exe ^
    /link /SUBSYSTEM:WINDOWS windowsapp.lib user32.lib shell32.lib
 if errorlevel 1 (

@@ -53,7 +53,8 @@ pub fn dispatch(core: &Arc<Core>, body: &str) {
                                 "daemonRunning": ctl::running(),
                                 "autostart": autostart::get().is_some(),
                                 "oldTask": core2.old_task.load(Ordering::SeqCst),
-                                "logDir": config::exe_dir().display().to_string(),
+                                "logDir": config::exe_dir().join("log").display().to_string(),
+                                "version": env!("CARGO_PKG_VERSION"),
                             }),
                         );
                     }
@@ -234,7 +235,10 @@ pub fn dispatch(core: &Arc<Core>, body: &str) {
         }
 
         "open_logs" => {
-            let dir = config::exe_dir();
+            // 日志在 exe 同级 log\ 子目录；还没跑过 daemon 时目录不存在，先建，
+            // 否则资源管理器会弹"找不到路径"。
+            let dir = config::exe_dir().join("log");
+            let _ = std::fs::create_dir_all(&dir);
             let d = win::wide(&dir.display().to_string());
             let verb = win::wide("open");
             let rc = unsafe { win::ShellExecuteW(std::ptr::null_mut(), verb.as_ptr(), d.as_ptr(), std::ptr::null(), std::ptr::null(), win::SW_SHOWNORMAL) };

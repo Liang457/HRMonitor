@@ -51,6 +51,14 @@ if errorlevel 1 (
 
 if not exist obj mkdir obj
 
+REM --- Version resource: common\version.h is the single version source (dual-copy
+REM     with Cargo.toml, verified by scripts\pack.ps1). rc.exe is on PATH after vcvars.
+rc /nologo /Fo"obj\version.res" version.rc
+if errorlevel 1 (
+    echo [ERROR] rc.exe failed on version.rc
+    exit /b 1
+)
+
 REM /utf-8 : sources are UTF-8; without it MSVC reads them as the system codepage
 REM          and the Chinese comments in plugin.cpp break the build.
 REM /MT    : static CRT, so the DLL has no VC++ runtime dependency.
@@ -62,7 +70,7 @@ cl /nologo /LD /std:c++20 /EHsc /O2 /MT /utf-8 /W4 /sdl /guard:cf /Zi ^
    /DWIN32_LEAN_AND_MEAN /DNOMINMAX /D_WIN32_WINNT=0x0601 ^
    /I"..\common" ^
    /Fo"obj\\" ^
-   plugin.cpp ^
+   plugin.cpp obj\version.res ^
    /Fe:HeartRate.dll ^
    /link /INCREMENTAL:NO
 if errorlevel 1 (
@@ -96,13 +104,15 @@ for %%n in (GetSourcesNum GetSourceDesc GetSourceData) do (
 echo.
 echo [OK] ab-plugin\HeartRate.dll  - x86
 echo [OK] exports: GetSourcesNum / GetSourceDesc / GetSourceData
-if not exist "..\build" mkdir "..\build"
-copy /y HeartRate.dll "..\build\HeartRate.dll" >nul
+REM DLLs ship in build\plugins\ (the release layout: repo root keeps only the
+REM exes and README.md), which is also where the deploy script looks.
+if not exist "..\build\plugins" mkdir "..\build\plugins"
+copy /y HeartRate.dll "..\build\plugins\HeartRate.dll" >nul
 if errorlevel 1 (
-    echo [ERROR] cannot copy to ..\build\HeartRate.dll
+    echo [ERROR] cannot copy to ..\build\plugins\HeartRate.dll
     exit /b 1
 )
-echo [OK] build\HeartRate.dll
+echo [OK] build\plugins\HeartRate.dll
 echo.
 echo Deploy into Afterburner and enable it - needs administrator:
 echo     powershell -ExecutionPolicy Bypass -File scripts\deploy-afterburner-plugin.ps1

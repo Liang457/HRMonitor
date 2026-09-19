@@ -94,7 +94,11 @@ std::wstring HrJoinPath(const std::wstring& dir, const std::wstring& name) {
 }
 
 std::wstring HrDaemonIniPath() {
-    return HrJoinPath(HrExeDir(), L"hr-daemon.ini");
+    // 配置在 exe 同级的 config\ 子目录（发行目录的根只放 exe 和 README.md）。
+    // 故意不做旧位置（exe 旁）的回退读取：程序里背一套"搬家"逻辑就得永远背着，
+    // 而两处都读会出现"改了这份没生效"的分裂状态。旧 ini 由发行包里的
+    // scripts\migrate-1.1.3.ps1 一次性移入 config\（留 .bak），脚本幂等。
+    return HrJoinPath(HrJoinPath(HrExeDir(), L"config"), L"hr-daemon.ini");
 }
 
 bool HrParseMac(const std::wstring& s, unsigned long long& out) {

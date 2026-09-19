@@ -1,5 +1,6 @@
 # ---- 构建产物 ---------------------------------------------------------
 build/
+dist/
 daemon/obj/
 tm-plugin/obj/
 ab-plugin/obj/

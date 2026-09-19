@@ -24,14 +24,15 @@
 #     powershell -ExecutionPolicy Bypass -File scripts\deploy-afterburner-plugin.ps1
 #
 # 参数：
-#   -AbDir <路径>    Afterburner 安装目录（默认 D:\Program Files\MSI Afterburner）
-#   -DllPath <路径>  要安装的 DLL（默认 <仓库>\build\HeartRate.dll）
+#   -AbDir <路径>    Afterburner 安装目录（不传就按常见安装位置自动探测）
+#   -DllPath <路径>  要安装的 DLL（缺省依次找 <仓库>\build\plugins\、
+#                    <仓库>\plugins\、<仓库>\ 下的 HeartRate.dll）
 #   -Uninstall       卸载：删 DLL、删说明、删启用项
 #   -KeepRunning     改完不重启 Afterburner（下次启动才生效）
 
 [CmdletBinding()]
 param(
-    [string]$AbDir = 'D:\Program Files\MSI Afterburner',
+    [string]$AbDir = '',
     [string]$DllPath,
     [switch]$Uninstall,
     [switch]$KeepRunning
@@ -43,6 +44,25 @@ $PluginName = 'HeartRate'
 $PluginFile = "$PluginName.dll"
 
 # --- 0. 前置检查 ------------------------------------------------------------
+
+# 解析 Afterburner 目录：显式参数 -> 挨个试常见安装位置。
+# 以前默认值写死一个本机路径（D:\Program Files\...），等于仓库里带着别人的
+# 机器布局；现在和 configure-trafficmonitor.ps1 一样自动探测。
+function Resolve-AbDir([string]$explicit) {
+    if ($explicit) { return $explicit }
+    $candidates = @()
+    if ($env:ProgramFiles)        { $candidates += Join-Path $env:ProgramFiles 'MSI Afterburner' }
+    if (${env:ProgramFiles(x86)}) { $candidates += Join-Path ${env:ProgramFiles(x86)} 'MSI Afterburner' }
+    $candidates += 'D:\Program Files\MSI Afterburner'
+    foreach ($p in $candidates) {
+        if (Test-Path -LiteralPath (Join-Path $p 'MSIAfterburner.exe')) {
+            Write-Host "[ab] 自动找到 Afterburner: $p"
+            return $p
+        }
+    }
+    throw "找不到 MSI Afterburner。请用 -AbDir 指定安装目录。"
+}
+$AbDir = Resolve-AbDir $AbDir
 
 if (-not (Test-Path -LiteralPath $AbDir)) {
     throw "找不到 Afterburner 目录：$AbDir（用 -AbDir 指定安装目录）"
@@ -87,8 +107,22 @@ if (-not (Test-RunningElevated)) {
     Write-Warning "  往 $probeDir 里放 DLL 等于往一个提权进程里注入代码，别把该目录的写权限开放给不受信任的账户。"
 }
 
-if (-not $DllPath) {
-    $DllPath = Join-Path (Split-Path -Parent $PSScriptRoot) "build\$PluginFile"
+# DLL 来源：显式 -DllPath -> <仓库>\build\plugins\（开发布局，build.cmd 的落点）
+# -> <仓库>\plugins\（发行/部署布局）-> <仓库>\（更早的部署布局）。
+# 卸载模式用不到 DLL，这里找不到也不报错；安装分支里再检查。
+$RepoRoot = Split-Path -Parent $PSScriptRoot
+$triedDll = @()
+if ($DllPath) {
+    $triedDll += $DllPath
+} else {
+    foreach ($c in @(
+            (Join-Path $RepoRoot 'build\plugins\HeartRate.dll'),
+            (Join-Path $RepoRoot 'plugins\HeartRate.dll'),
+            (Join-Path $RepoRoot 'HeartRate.dll')
+        )) {
+        $triedDll += $c
+        if (Test-Path -LiteralPath $c) { $DllPath = $c; break }
+    }
 }
 
 if (-not (Test-Path -LiteralPath $profCfg)) {
@@ -184,16 +218,44 @@ if ($Uninstall) {
     Write-Host '卸载完成。Afterburner 里那条 Heart rate 曲线需要手动在监控列表里取消勾选。'
 } else {
     # --- 2b. 安装 -----------------------------------------------------------
-    if (-not (Test-Path -LiteralPath $DllPath)) {
-        throw "找不到 $DllPath —— 先构建：cmd /c ab-plugin\build.cmd"
+    if (-not $DllPath) {
+        throw ("找不到 HeartRate.dll（试过：$($triedDll -join '、')）。" +
+               "先构建：cmd /c ab-plugin\build.cmd（产物落在 build\plugins\），" +
+               "或用 -DllPath 指定现成的 DLL。")
     }
+    if (-not (Test-Path -LiteralPath $DllPath)) {
+        throw "找不到 -DllPath 指定的 $DllPath"
+    }
+    Write-Host "[ab] 插件来源: $DllPath"
 
     if (-not (Test-Path -LiteralPath $monDir))  { New-Item -ItemType Directory -Force -Path $monDir  | Out-Null }
     if (-not (Test-Path -LiteralPath $helpDir)) { New-Item -ItemType Directory -Force -Path $helpDir | Out-Null }
 
+    # 旧版插件留着会一直读不到数据（共享内存布局/版本对不上），所以来源有的
+    # 话一定替换：内容相同（SHA256 一致）就跳过；否则旧 DLL 留成 .bak，经临时
+    # 文件原子替换。临时名不带 .dll 后缀，宿主扫 Monitoring\*.dll 不会加载半成品。
     $target = Join-Path $monDir $PluginFile
-    Copy-Item -LiteralPath $DllPath -Destination $target -Force
-    Write-Host "[ab] 已安装 $target"
+    if ((Test-Path -LiteralPath $target) -and
+        ((Get-FileHash -LiteralPath $DllPath -Algorithm SHA256).Hash -eq
+         (Get-FileHash -LiteralPath $target -Algorithm SHA256).Hash)) {
+        Write-Host "[ab] 已装着同一份，跳过复制: $target"
+    } else {
+        $tmp = Join-Path $monDir 'HeartRate.dll.tmp'
+        $bak = Join-Path $monDir 'HeartRate.dll.bak'
+        try {
+            Copy-Item -LiteralPath $DllPath -Destination $tmp -Force
+            if (Test-Path -LiteralPath $target) {
+                [System.IO.File]::Replace($tmp, $target, $bak)   # 原子替换，旧文件留成 .bak
+            } else {
+                Move-Item -LiteralPath $tmp -Destination $target
+            }
+            Write-Host "[ab] 已安装 $target（旧文件留为 HeartRate.dll.bak）"
+        } catch {
+            Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue
+            throw ("安装插件 DLL 失败：$target —— Afterburner 可能没被关掉（提权运行？）。" +
+                   "请先在托盘退出 Afterburner，或用【以管理员身份运行】的 PowerShell 再跑。")
+        }
+    }
 
     # 说明文件是 ANSI 纯文本（官方那 7 个说明文件都是），所以内容用 ASCII 英文，
     # 免得换一台机器、换一个代码页就变成乱码。
