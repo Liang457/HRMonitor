@@ -95,8 +95,11 @@ foreach ($a in $artifacts) {
 $ini = Join-Path $Root 'build\config\hr-daemon.ini'
 if (-not (Test-Path -LiteralPath $ini)) {
     Write-Host '[pack] build\config\hr-daemon.ini 不存在，用 hr-manager reset -y 生成默认配置 ...'
-    & (Join-Path $Root 'build\hr-manager.exe') reset -y
-    if ($LASTEXITCODE -ne 0) { throw 'hr-manager reset -y 失败' }
+    # hr-manager.exe 是 GUI 子系统：宿主不保证等它退出（CI 的 pwsh 实测不等就往下跑），
+    # 直接 & 调用时 $LASTEXITCODE 还是上一条命令（git tag）残留的值，下面的 Test-Path
+    # 会和写文件赛跑。Start-Process -Wait 挂在进程句柄上等真退出，ExitCode 才是它自己的。
+    $reset = Start-Process -FilePath (Join-Path $Root 'build\hr-manager.exe') -ArgumentList 'reset', '-y' -Wait -PassThru -NoNewWindow
+    if ($reset.ExitCode -ne 0) { throw "hr-manager reset -y 失败（exit $($reset.ExitCode)）" }
     if (-not (Test-Path -LiteralPath $ini)) { throw "reset 之后仍找不到 $ini" }
 } else {
     Write-Host "[pack] 使用现有的 build\config\hr-daemon.ini（注意：那是本机 build\ 里的配置）"

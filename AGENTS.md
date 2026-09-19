@@ -26,9 +26,14 @@ cmd /c tools\hr-manager\build.cmd :: build\hr-manager.exe            (Rust，GUI
 - 不用手表即可验证整条链路：`build\hr-manager.exe set demo 1 && build\hr-manager.exe restart`，
   然后 `pwsh -File tools\mahm-probe\mahm-probe.ps1 -Filter Heart` 看 Afterburner 共享内存里的值；
   hr-manager 面板的状态卡也应显示模拟心率。
-- 发行打包：`powershell -ExecutionPolicy Bypass -File scripts\pack.ps1`（CI 的
-  release.yml 也调它）——校验两处版本号一致，把 build\ 组装成发行布局（根只放 exe 和
-  README.md，config/docs/plugins/scripts 各归子目录），压 zip 到 dist\。
+- **发行版由 GitHub Actions 编译，不在本地出包**：`.github/workflows/release.yml`
+  （push main / 打 v* 标签 / 手动触发）在 windows-latest 上复用仓库的 build.cmd 构建
+  四个发行组件（osd_test 不进发行；dumpbin 自检在 CI 同样生效），再调
+  `scripts\pack.ps1` 组装压 zip。push main 只产 dev artifact
+  （`HRMonitor-dev-<短SHA>-win64.zip`）供下载，打 v* 标签才创建 GitHub Release。
+  本地构建只做开发验证；本地跑 `powershell -ExecutionPolicy Bypass -File
+  scripts\pack.ps1` 走的是同一条打包路（校验版本双副本一致 + 发行布局 + zip 到
+  dist\），但那只是拿包，不算发行。
 
 ## 架构边界（改代码前必读）
 
@@ -88,7 +93,10 @@ cmd /c tools\hr-manager\build.cmd :: build\hr-manager.exe            (Rust，GUI
   `EVENT_MODIFY_STATE` 权限位，只给 SYNCHRONIZE 的话 SetEvent 会静默失败（踩过）。
 - **hr-manager 是 GUI 子系统，CLI 子命令必须先 `cli::attach_console()` 再打印**：附加父
   控制台 + SetStdHandle 要赶在任何打印/读输入之前（Rust std 句柄惰性初始化）；`reset` 的
-  确认提示读到 EOF 一律当"不做"。
+  确认提示读到 EOF 一律当"不做"。脚本里也别假设 `& hr-manager.exe <子命令>` 会等它退出——
+  CI 的 pwsh 对 GUI 进程不等就往下跑，`$LASTEXITCODE` 还是上一条命令的残留值；要拿真实
+  退出码用 `Start-Process -Wait -PassThru`（pack.ps1 生成示例 ini 时踩过：Test-Path 和
+  写文件赛跑，CI 必挂）。
 - **扫描前必须停 daemon**（手表被连着时不广播），停启编排在 `tools/hr-manager/src/scan_job.rs`：
   取消/失败路径要把 daemon 拉回来；正常扫完保持停止等选表，用户放弃时（面板关闭/点放弃）
   再拉回——`Core::scan_needs_restore` 是**粘滞标志**（只在实际恢复成功处清零，扫描线程开头
@@ -103,6 +111,24 @@ cmd /c tools\hr-manager\build.cmd :: build\hr-manager.exe            (Rust，GUI
   **读失败绝不 Close 共享内存映射**（unmap 掉别的线程正在读的视图会崩宿主，踩过）。
 - 真机长测尚未完成（开发期实测设备为华为手表）：扫描→连接→订阅→设备名已验收；心率进共享内存、息屏/
   超时断开后的长时间重连还在测。协议按标准 BLE HR Profile 实现，链路用 demo 源验收过。
+
+## 部署脚本（scripts\）
+
+- 发行 zip 的 `scripts\` 子目录原样带上部署脚本；hr-manager 面板的部署按钮经
+  `ipc.rs::run_deploy_script` 调它们（tm 的部署把 `integration.tm_dir` 传给脚本）。
+- `deploy-afterburner-plugin.ps1`（Afterburner 4.6.6 实测）：装 HeartRate.dll 进
+  `<AB>\Plugins\Monitoring\`、写 Help 说明、置 `Profiles\MSIAfterburner.cfg` 的
+  `[Monitoring] HeartRate.dll=1` 与根配置 `EnablePlugins=1`。**故意不动**
+  `[Settings] Sources=`/`[Source Heart rate]` 段——那是 Afterburner 自己的数据结构，
+  硬改会被覆盖；OSD 显示仍要用户在界面里勾两下。
+- `configure-trafficmonitor.ps1`（V1.86 实测）：部署 hr_plugin.dll 进 `<TM>\plugins\`，
+  把项目 id（默认 `hr`）并进 `config.ini` 的 `plugin_display_item`。编码按锚点键探测、
+  按原编码写回（这份配置的编码在变）；`show_task_bar_wnd` 写 true 不一定生效，
+  任务栏没出现要用户手动开一次（开过会被记住）。
+- 部署 DLL 的共同细节：先关宿主（宿主退出时会把内存配置整个写回，改文件必须在它
+  停着时做）、SHA256 相同则跳过替换、临时文件名不带 .dll 后缀（防宿主扫 `*.dll`
+  时加载半成品）、`File.Replace` 原子替换、旧 DLL 留 `.bak`。
+- `run-daemon.cmd`：前台调试跑 daemon（日志直出当前控制台，Ctrl+C 停）。
 
 ## 文档
 

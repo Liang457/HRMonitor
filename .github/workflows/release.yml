@@ -22,7 +22,7 @@ jobs:
   build:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # hr-manager 带 GUI 栈依赖（wry/tao/tray-icon），Cargo.lock 已锁版本，
       # CI 有网直接拉；只需保证 cargo 够新（lockfile 是 v4）
@@ -58,7 +58,7 @@ jobs:
           scripts/pack.ps1 -Name $name
 
       - name: 上传构建产物（每次运行均可下载）
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: HRMonitor-win64
           path: dist/*.zip
