@@ -43,10 +43,6 @@ jobs:
         shell: cmd
         run: chcp 65001 >nul && tm-plugin\build.cmd
 
-      - name: 构建 OSD 测试工具（x64）
-        shell: cmd
-        run: chcp 65001 >nul && tools\osd_test\build.cmd
-
       - name: 构建 hr-manager（Rust + WebView2 GUI）
         shell: cmd
         run: chcp 65001 >nul && tools\hr-manager\build.cmd
@@ -57,7 +53,7 @@ jobs:
         shell: cmd
         run: chcp 65001 >nul && build\hr-manager.exe reset -y
 
-      # 发行包：5 个产物 + 示例 ini + scripts 部署脚本 + 文档。
+      # 发行包：4 个产物 + 示例 ini + scripts 部署脚本 + 文档。
       # tag 推送用 tag 名命名，main 推送用 dev-<短SHA>
       - name: 组装发行包
         shell: pwsh
@@ -67,7 +63,7 @@ jobs:
                  else { "dev-$($env:GITHUB_SHA.Substring(0, 7))" }
           $stage = "dist/HRMonitor-$tag-win64"
           New-Item -ItemType Directory $stage | Out-Null
-          Copy-Item build/hr-daemon.exe, build/HeartRate.dll, build/hr_plugin.dll, build/hr-manager.exe, build/osd_test.exe, build/hr-daemon.ini $stage/
+          Copy-Item build/hr-daemon.exe, build/HeartRate.dll, build/hr_plugin.dll, build/hr-manager.exe, build/hr-daemon.ini $stage/
           Copy-Item scripts $stage/scripts -Recurse
           Copy-Item LICENSE, THIRD_PARTY_NOTICES.md, README.md $stage/
           Compress-Archive $stage "dist/HRMonitor-$tag-win64.zip"
