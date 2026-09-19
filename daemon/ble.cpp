@@ -1,4 +1,4 @@
-// daemon/ble.cpp — C++/WinRT 采集华为手表"心率广播"
+// daemon/ble.cpp — C++/WinRT 采集 BLE 心率广播
 //
 // 标准 BLE Heart Rate Profile：
 //   服务    0000180d-0000-1000-8000-00805f9b34fb

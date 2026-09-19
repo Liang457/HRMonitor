@@ -21,7 +21,7 @@ pub fn open(
     target: &tao::event_loop::EventLoopWindowTarget<crate::state::UserEvent>,
 ) -> Result<Panel, String> {
     let window = tao::window::WindowBuilder::new()
-        .with_title("华为手表心率")
+        .with_title("BLE 心率")
         .with_inner_size(tao::dpi::LogicalSize::new(500.0f64, 760.0f64))
         .with_min_inner_size(tao::dpi::LogicalSize::new(420.0f64, 560.0f64))
         .build(target)

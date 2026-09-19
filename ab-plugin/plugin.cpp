@@ -15,7 +15,7 @@
 // 所以本 DLL 是纯 Win32 + /MT 静态 CRT，零依赖。
 //
 // 必须编成 32 位：MSIAfterburner.exe 是 x86 PE（machine 0x14C），装不了 x64 DLL。
-// 数据来自 daemon 写的中立共享内存 Local\HuaWeiHR_SM，与位数无关（按字节布局）。
+// 数据来自 daemon 写的中立共享内存 Local\BleHR_SM，与位数无关（按字节布局）。
 #include "../common/hr_shared.h"
 #include "MonitoringSourceDesc.h"
 

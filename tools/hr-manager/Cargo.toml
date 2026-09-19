@@ -1,8 +1,8 @@
 [package]
 name = "hr-manager"
-version = "1.1.2"
+version = "1.1.3"
 edition = "2021"
-description = "管理器：华为手表心率 → TrafficMonitor + Afterburner OSD（托盘 + 配置面板 + CLI）"
+description = "管理器：BLE 心率 → TrafficMonitor + Afterburner OSD（托盘 + 配置面板 + CLI）"
 license = "MIT"
 
 # GUI 栈依赖 wry(WebView2) + tao(窗口/事件循环) + tray-icon(托盘)。

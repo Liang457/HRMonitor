@@ -1,7 +1,7 @@
 # AGENTS.md
 
-华为手表（BLE 心率广播，服务 `0x180D`）→ Windows：`hr-daemon.exe`（C++）采集后写入中立共享内存
-`Local\HuaWeiHR_SM`（64 字节），三个互不依赖的读端各自去读——Afterburner 监控数据源插件
+BLE 心率广播设备（服务 `0x180D`，手表、手环等）→ Windows：`hr-daemon.exe`（C++）采集后写入中立共享内存
+`Local\BleHR_SM`（64 字节），三个互不依赖的读端各自去读——Afterburner 监控数据源插件
 （游戏内 OSD，由 RTSS 渲染）、TrafficMonitor 任务栏插件，以及 `hr-manager.exe`（Rust）的
 实时状态面板。仅 Windows。仓库文档与注释全为中文，新代码的注释/日志/UI 字符串请保持中文。
 
@@ -62,13 +62,13 @@ cmd /c tools\hr-manager\build.cmd :: build\hr-manager.exe  (Rust，GUI 栈依赖
 - **`.cmd` 批处理保持 CRLF、注释尽量 ASCII-only**（`.gitattributes` 已强制 eol=crlf）；
   `(...)` 块内 echo 的文本里不能出现裸 `)`，会提前闭合代码块。
 - 换行符约定：.cmd/.bat/.ps1 = CRLF；.cpp/.h/.rs/.md/.toml/.ini/.lock = LF。
-- **自启用注册表 Run 键**（`HKCU\...\CurrentVersion\Run`，值名 `HuaWeiHRManager`，指向
+- **自启用注册表 Run 键**（`HKCU\...\CurrentVersion\Run`，值名 `BleHRManager`，指向
   `hr-manager.exe --minimized`）：无管理员、天然在当前登录会话，共享内存 `Local\` 命名空间
   因此一定对。老版本的计划任务方案已废弃（会话 0 命名空间的坑随之消失），残留清理用
   `scripts\uninstall-task.ps1`，面板会检测残留并提示。
 - daemon 命令行参数（`--demo`/`--address`）优先于 hr-daemon.ini；daemon 单实例互斥体
-  `Local\HuaWeiHR_daemon`，manager 单实例互斥体 `Local\HuaWeiHR_manager`。第二个 manager
-  实例 SetEvent `Local\HuaWeiHR_manager_open` 通知第一个实例打开面板后退出——打开事件要带
+  `Local\BleHR_daemon`，manager 单实例互斥体 `Local\BleHR_manager`。第二个 manager
+  实例 SetEvent `Local\BleHR_manager_open` 通知第一个实例打开面板后退出——打开事件要带
   `EVENT_MODIFY_STATE` 权限位，只给 SYNCHRONIZE 的话 SetEvent 会静默失败（踩过）。
 - **hr-manager 是 GUI 子系统，CLI 子命令必须先 `cli::attach_console()` 再打印**：附加父
   控制台 + SetStdHandle 要赶在任何打印/读输入之前（Rust std 句柄惰性初始化）；`reset` 的
@@ -85,7 +85,7 @@ cmd /c tools\hr-manager\build.cmd :: build\hr-manager.exe  (Rust，GUI 栈依赖
 - **tm-plugin 有两个宿主窗口线程**（主窗口/任务栏各自 timer）并发调 `DataRequired()`：
   `Refresh()` 全程独占 SRWLOCK；返回给宿主的字符串走 `TextCell` 三缓冲原子发布；
   **读失败绝不 Close 共享内存映射**（unmap 掉别的线程正在读的视图会崩宿主，踩过）。
-- 真机（华为手表）尚未完成长测：扫描→连接→订阅→设备名已验收；心率进共享内存、息屏/
+- 真机长测尚未完成（开发期实测设备为华为手表）：扫描→连接→订阅→设备名已验收；心率进共享内存、息屏/
   超时断开后的长时间重连还在测。协议按标准 BLE HR Profile 实现，链路用 demo 源验收过。
 
 ## 文档

@@ -32,7 +32,7 @@ const char kRotatedNote[] = "--- 上一份写满了，已轮转（那份现在�
 
 // exe 目录写不进去（例如装到 C:\Program Files）时的兜底位置。
 // 环境变量可能长过 MAX_PATH，所以先用 nullptr 问长度再取；失败也不要退回
-// "." + "\HuaWeiHR" —— 那是相对当前工作目录，会莫名其妙在别处建目录。
+// "." + "\BleHR" —— 那是相对当前工作目录，会莫名其妙在别处建目录。
 std::wstring LocalAppDataFallbackDir() {
     auto env = [](const wchar_t* name) -> std::wstring {
         const DWORD need = GetEnvironmentVariableW(name, nullptr, 0);
@@ -47,7 +47,7 @@ std::wstring LocalAppDataFallbackDir() {
     if (dir.empty()) dir = env(L"TEMP");          // 总会是个绝对路径
     if (dir.empty()) return std::wstring();
 
-    dir += L"\\HuaWeiHR";
+    dir += L"\\BleHR";
     CreateDirectoryW(dir.c_str(), nullptr);   // 已存在则失败，忽略
     return dir;
 }

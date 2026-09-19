@@ -1,6 +1,6 @@
 // tm-plugin/plugin.cpp
 // TrafficMonitor x64 插件（导出 TMPluginGetInstance）
-// 读取 daemon 写入的命名共享内存 Local\HuaWeiHR_SM，作为一个显示项目 "心率"。
+// 读取 daemon 写入的命名共享内存 Local\BleHR_SM，作为一个显示项目 "心率"。
 //
 // 设计要点：
 //   * GetItemValueText() 被主程序以极高频率调用，因此它只返回 DataRequired()
@@ -172,7 +172,7 @@ public:
     {
         switch (index) {
         case TMI_NAME:        return L"心率监控";
-        case TMI_DESCRIPTION: return L"通过蓝牙接收华为手表心率广播，显示实时心率";
+        case TMI_DESCRIPTION: return L"通过蓝牙接收心率广播，显示实时心率";
         case TMI_AUTHOR:      return L"Cool-GK";
         case TMI_COPYRIGHT:   return L"MIT License";
         case TMI_VERSION:     return L"1.0.0";

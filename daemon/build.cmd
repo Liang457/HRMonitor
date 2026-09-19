@@ -1,7 +1,7 @@
 @echo off
 REM Build hr-daemon.exe (x64, static CRT, GUI subsystem).
 REM Depends only on the Windows SDK: C++/WinRT BLE via windowsapp.lib, no third-party libs.
-REM Writes the neutral shared memory Local\HuaWeiHR_SM only; the OSD is Afterburner's job.
+REM Writes the neutral shared memory Local\BleHR_SM only; the OSD is Afterburner's job.
 setlocal
 cd /d "%~dp0"
 

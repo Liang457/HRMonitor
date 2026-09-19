@@ -7,7 +7,7 @@ use crate::proc;
 use crate::win;
 
 const RUN_KEY: &str = "Software\\Microsoft\\Windows\\CurrentVersion\\Run";
-const VALUE_NAME: &str = "HuaWeiHRManager";
+const VALUE_NAME: &str = "BleHRManager";
 
 /// 当前自启项的内容（None = 没开）。只看键在不在，内容不校验。
 pub fn get() -> Option<String> {

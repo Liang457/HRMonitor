@@ -1,10 +1,10 @@
 # HRMonitor
 
-把华为手表的"心率广播"（标准 BLE Heart Rate Profile，服务 `0x180D`）读进电脑，再送到
+把 BLE 心率设备的"心率广播"（标准 BLE Heart Rate Profile，服务 `0x180D`）读进电脑，再送到
 两个显示端：MSI Afterburner 的游戏内 OSD，和 TrafficMonitor 的任务栏。
 
 ```
-手表（心率广播） ──BLE──▶ hr-daemon.exe ──写──▶ Local\HuaWeiHR_SM（64 字节共享内存）
+BLE 心率设备（心率广播） ──BLE──▶ hr-daemon.exe ──写──▶ Local\BleHR_SM（64 字节共享内存）
                           连接/重连/扫描               │
                                           ┌────────────┼────────────┐
                                           ▼            ▼            ▼
@@ -185,7 +185,7 @@ build\hr-manager.exe restart
 日志里出现 `模式: 直连配置里的地址 ...` → `BLE: 已连接 ...，已订阅心率通知` 就成了。
 地址留空 daemon 不会连接，任务栏和 OSD 一直显示 `--`，日志提示"未配置手表地址"。
 
-想确认广播在线，用 `build\hr-manager.exe scan 10`。华为手表在广播里常常不带名字，列表里
+想确认广播在线，用 `build\hr-manager.exe scan 10`。很多设备在广播里常常不带名字，列表里
 那台会先显示"（还没拿到名字）"，认 MAC 就行。
 
 ## 显示端
@@ -255,7 +255,7 @@ RTSS 只在自己 hook 到的 3D 程序上画 OSD。要确认 OSD 真画出来�
 ## 开机自启
 
 面板里勾上"开机自启"即可（或托盘右键菜单里开关），原理是往注册表
-`HKCU\Software\Microsoft\Windows\CurrentVersion\Run` 写 `HuaWeiHRManager` →
+`HKCU\Software\Microsoft\Windows\CurrentVersion\Run` 写 `BleHRManager` →
 `"…\hr-manager.exe" --minimized`。
 
 走 Run 键而不是计划任务：不需要管理员，登录后只出托盘不弹面板并按 ini 拉起 daemon，
@@ -263,6 +263,18 @@ daemon 与插件天然同在一个登录会话（`Local\` 命名空间一定对�
 daemon。旧版本的计划任务（`HuaweiHRDaemon`）已废弃，面板检测到残留会提示，清理跑
 `powershell -ExecutionPolicy Bypass -File scripts\uninstall-task.ps1`。想让开机后真正连上
 表，先用 hr-manager 选表保存（写 `source.address`），自启实例读的是同一份 ini。
+
+## 从 1.1.2 升级
+
+1.1.3 把全部进程间标识符的前缀从 `HuaWeiHR` 改成了 `BleHR`，包括共享内存
+`Local\BleHR_SM`、单实例互斥体、窗口类名、注册表自启值名 `BleHRManager` 和日志目录
+`%LOCALAPPDATA%\BleHR`。新旧版本的组件互相认不出来，不能混跑，升级时要把
+hr-daemon.exe、hr-manager.exe 和两个插件 DLL 全部换成 1.1.3 的文件，然后跑一次
+`powershell -ExecutionPolicy Bypass -File scripts\migrate-1.1.3.ps1`。
+
+迁移脚本会停掉正在运行的 daemon 和 manager，把注册表自启值改名为 `BleHRManager`，
+删除旧版计划任务 `HuaweiHRDaemon` 残留，并把日志目录改名为 `BleHR`。脚本可以重复执行。
+这个脚本只随 1.1.3 发行版提供，之后的版本不再附带。全新安装不需要跑它。
 
 ## hr-daemon 命令行参数
 
@@ -278,7 +290,7 @@ hr-daemon.exe [--demo] [--address AA:BB:CC:DD:EE:FF] [--scan [秒数]] [--debug]
 | `--debug` | 连每条心率都写进日志 |
 | `--quiet` | 不附加控制台，日志只写文件（hr-manager 拉起时用） |
 
-单实例靠互斥体 `Local\HuaWeiHR_daemon`，重复启动记一行日志后退出。正常退出（`taskkill`
+单实例靠互斥体 `Local\BleHR_daemon`，重复启动记一行日志后退出。正常退出（`taskkill`
 不带 `/F`、Ctrl+C、注销、关机）会关掉共享内存映射，正在扫描时也能立刻收手。
 
 hr-manager 拉起 / restart 出来的 daemon 都带 `--quiet`，不附加控制台、日志只进文件，
@@ -311,7 +323,7 @@ Afterburner 通常以管理员身份运行（实测普通权限连 `taskkill` �
 
 ## 当前限制
 
-- **真机（华为手表）验收进行中**：2026-09-17 实测扫描 → 连接 → 订阅 → 读到设备名
+- **真机验收进行中**（开发期实测设备为华为手表）：2026-09-17 实测扫描 → 连接 → 订阅 → 读到设备名
   （HUAWEI WATCH HR-05F）已通；心率值进共享内存、息屏/超时断开后的长时间重连还没
   长测。协议按标准 BLE HR Profile 实现（flags bit0 决定 bpm 是 uint8 还是 uint16
   小端），"直连不存在地址会优雅失败并退避"已验证。

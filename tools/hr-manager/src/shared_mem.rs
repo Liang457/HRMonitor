@@ -1,4 +1,4 @@
-// src/shared_mem.rs —— 读中立共享内存 Local\HuaWeiHR_SM（64 字节 HrSharedData）。
+// src/shared_mem.rs —— 读中立共享内存 Local\BleHR_SM（64 字节 HrSharedData）。
 //
 // 布局必须和 common/hr_shared.h 一致（pack(4)）：manager 只是又一个读端，
 // 和两个插件地位相同。读端校验 magic + version，不对就当没数据。
@@ -7,7 +7,7 @@ use crate::win;
 use std::ffi::c_void;
 
 /// common/hr_shared.h 里的 HRSM_NAME
-const SM_NAME: &str = "Local\\HuaWeiHR_SM";
+const SM_NAME: &str = "Local\\BleHR_SM";
 const SM_MAGIC: u32 = 0x4D53_5248; // 'HRSM'
 const SM_VERSION: u32 = 1;
 const SM_SIZE: usize = 64;

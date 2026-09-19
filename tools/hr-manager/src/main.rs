@@ -1,4 +1,4 @@
-// hr-manager —— 华为手表心率采集的管理器。
+// hr-manager —— BLE 心率采集的管理器。
 //
 // 一个 exe 两种形态：
 //   无参数 / --minimized → GUI：托盘常驻 + 按需弹出的 WebView2 配置面板

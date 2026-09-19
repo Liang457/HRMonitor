@@ -8,10 +8,10 @@
 // shared_mem.rs 按字节布局读，名字也抄了同一份。
 
 /// hr-daemon 的单实例互斥体：整个生命周期都握着，OpenMutexW 能打开 = 还在跑
-pub const DAEMON_MUTEX: &str = "Local\\HuaWeiHR_daemon";
+pub const DAEMON_MUTEX: &str = "Local\\BleHR_daemon";
 
 /// hr-daemon 的隐藏窗口类名：FindWindowW 找到它再发 WM_CLOSE 走优雅退出
-pub const DAEMON_WNDCLASS: &str = "HuaWeiHRDaemonWnd";
+pub const DAEMON_WNDCLASS: &str = "BleHRDaemonWnd";
 
 /// daemon 的 exe 名（必须和 manager 同目录）
 pub const DAEMON_EXE: &str = "hr-daemon.exe";
@@ -22,6 +22,6 @@ pub const DAEMON_STOP_TIMEOUT_MS: u32 = 20_000;
 pub const DAEMON_START_TIMEOUT_MS: u32 = 8_000;
 
 /// hr-manager 自己的单实例互斥体：第二个实例把"打开面板"事件发给第一个就退出
-pub const MANAGER_MUTEX: &str = "Local\\HuaWeiHR_manager";
+pub const MANAGER_MUTEX: &str = "Local\\BleHR_manager";
 /// 手动事件：第二个实例 SetEvent 一下，第一个实例收到就打开面板
-pub const MANAGER_OPEN_EVENT: &str = "Local\\HuaWeiHR_manager_open";
+pub const MANAGER_OPEN_EVENT: &str = "Local\\BleHR_manager_open";

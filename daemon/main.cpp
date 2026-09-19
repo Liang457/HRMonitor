@@ -1,6 +1,6 @@
 // daemon/main.cpp — hr-daemon：采集心率，写进中立共享内存
 //
-// 共享内存 Local\HuaWeiHR_SM 是唯一输出，两个显示端都读它：
+// 共享内存 Local\BleHR_SM 是唯一输出，两个显示端都读它：
 //   * hr_plugin.dll        → TrafficMonitor 任务栏
 //   * HeartRate.dll        → MSI Afterburner 监控数据源 / OSD
 // daemon 自己不画任何东西，OSD 的呈现完全归 Afterburner 管。
@@ -191,7 +191,7 @@ BOOL WINAPI ConsoleCtrlHandler(DWORD type) {
 // 用日志通道输出，这样文件和（附加的）控制台都能看到，中文也不会乱码。
 void PrintUsage() {
     LogInfo("");
-    LogInfo("hr-daemon —— 华为手表心率广播 → 共享内存（TrafficMonitor 任务栏 / Afterburner OSD）");
+    LogInfo("hr-daemon —— BLE 心率广播 → 共享内存（TrafficMonitor 任务栏 / Afterburner OSD）");
     LogInfo("");
     LogInfo("用法:");
     LogInfo("  hr-daemon.exe              连接配置里的手表（正常使用；未配地址则不连接）");

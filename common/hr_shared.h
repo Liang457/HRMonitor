@@ -1,5 +1,5 @@
 // common/hr_shared.h
-// 华为手表心率 → 中立共享内存 HuaWeiHR_SM
+// BLE 心率设备 → 中立共享内存 BleHR_SM
 // daemon（写）与两个显示端插件（读）共用的唯一定义来源：
 //   hr_plugin.dll  → TrafficMonitor 任务栏
 //   HeartRate.dll  → MSI Afterburner 监控数据源 / OSD
@@ -16,11 +16,11 @@
 #endif
 #include <windows.h>
 
-// 64 字节定长记录写入名为 Local\HuaWeiHR_SM 的共享内存。
+// 64 字节定长记录写入名为 Local\BleHR_SM 的共享内存。
 #define HRSM_MAGIC      0x4D535248u   // 'HRSM'
 #define HRSM_VERSION    1u
 #define HRSM_SIZE       64u
-#define HRSM_NAME       L"Local\\HuaWeiHR_SM"
+#define HRSM_NAME       L"Local\\BleHR_SM"
 
 // 数据超过这个时间没有更新就视为超时（显示 --）。
 #define HRSM_TIMEOUT_MS 15000ull
