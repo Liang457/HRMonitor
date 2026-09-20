@@ -1,8 +1,8 @@
 // daemon/main.cpp — hr-daemon：采集心率，写进中立共享内存
 //
 // 共享内存 Local\BleHR_SM 是唯一输出，两个显示端都读它：
-//   * hr_plugin.dll        → TrafficMonitor 任务栏
-//   * HeartRate.dll        → MSI Afterburner 监控数据源 / OSD
+//   * trafficmonitor_hr_plugin.dll → TrafficMonitor 任务栏
+//   * afterburner_hr_plugin.dll    → MSI Afterburner 监控数据源 / OSD
 // daemon 自己不画任何东西，OSD 的呈现完全归 Afterburner 管。
 //
 // GUI 子系统静默运行；从 cmd 启动时会附加到父控制台，日志同时写文件；

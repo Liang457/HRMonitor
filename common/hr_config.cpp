@@ -323,6 +323,7 @@ HrConfig HrConfig::Load(const std::wstring& iniPath, std::vector<std::wstring>* 
     c.log_debug  = ini.GetBool(L"log", L"debug", c.log_debug);
 
     c.tm_dir = ini.GetStr(L"integration", L"tm_dir", L"");
+    c.ab_dir = ini.GetStr(L"integration", L"ab_dir", L"");
 
     c.Sanitize(notes);
     return c;
@@ -407,8 +408,10 @@ std::string HrConfig::ToIniText() const {
         "debug=%d\r\n"
         "\r\n"
         "[integration]\r\n"
-        "; TrafficMonitor 安装目录（只给 hr-manager.exe 用）\r\n"
-        "tm_dir=%s\r\n";
+        "; TrafficMonitor / MSI Afterburner 的安装目录，给 hr-manager 的\r\n"
+        "; \x22打开插件目录\x22按钮用；留空则按常见安装位置自动探测\r\n"
+        "tm_dir=%s\r\n"
+        "ab_dir=%s\r\n";
 
     const int need = _scprintf(fmt,
         demo ? 1 : 0,
@@ -418,7 +421,8 @@ std::string HrConfig::ToIniText() const {
         timeout_ms, refresh_ms,
         log_max_kb,
         log_debug ? 1 : 0,
-        ToUtf8(tm_dir).c_str());
+        ToUtf8(tm_dir).c_str(),
+        ToUtf8(ab_dir).c_str());
     if (need < 0) return std::string();   // 格式化本身出错
 
     std::string out((size_t)need + 1, '\0');
@@ -430,7 +434,8 @@ std::string HrConfig::ToIniText() const {
         timeout_ms, refresh_ms,
         log_max_kb,
         log_debug ? 1 : 0,
-        ToUtf8(tm_dir).c_str());
+        ToUtf8(tm_dir).c_str(),
+        ToUtf8(ab_dir).c_str());
     out.resize((size_t)need);
     return out;
 }
@@ -476,8 +481,8 @@ void HrPluginConfig::Sanitize(std::vector<std::wstring>* notes) {
 
 std::string HrPluginConfig::ToIniText() const {
     const char* fmt =
-        "; hr_plugin.ini —— TrafficMonitor 插件 hr_plugin.dll 的配置\r\n"
-        "; 放在 TrafficMonitor 的 plugins\\ 目录下（和 hr_plugin.dll 同级）。\r\n"
+        "; hr_plugin.ini —— TrafficMonitor 插件 trafficmonitor_hr_plugin.dll 的配置\r\n"
+        "; 放在 TrafficMonitor 的 plugins\\ 目录下（和插件 DLL 同级）。\r\n"
         "; 改完需要重启 TrafficMonitor 生效。\r\n"
         "\r\n"
         "[plugin]\r\n"

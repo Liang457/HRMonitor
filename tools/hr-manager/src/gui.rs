@@ -5,7 +5,7 @@
 //             UserEvent::Eval 在这里执行 evaluate_script。
 //   状态轮询  1 秒一次读共享内存，面板开着才推 window.__hr.status(...)。
 //   单实例    第二个实例 SetEvent 通知后退出；监视线程收到事件 → 打开面板。
-//   慢操作    重启 daemon / 扫描 / 部署脚本各自起临时线程，结果经 proxy 回主线程。
+//   慢操作    重启 daemon / 扫描 / 启动 daemon 各自起临时线程，结果经 proxy 回主线程。
 // 托盘菜单事件也统一转成 UserEvent（经 proxy），所有处理集中在一处。
 use crate::autostart;
 use crate::daemon_ctl as ctl;
@@ -63,6 +63,22 @@ pub fn run(minimized: bool) -> i32 {
 
     // 上次在扫描中死掉的话，daemon 还停着：看到恢复标记就把它拉回来。
     crate::scan_job::restore_pending();
+
+    // 开机自启只拉起了本进程（托盘），daemon 不会自己出现：这里兜底确保它在跑，
+    // 别让用户登录后还得开面板点"启动"。ctl::start 最长等 8 秒，丢后台线程，
+    // 别卡主线程进事件循环。用户随后手动停掉就随他（面板随时可用）；
+    // 比"记住上次状态"可预期——正常开机就该在采集。
+    {
+        let core2 = core.clone();
+        std::thread::spawn(move || {
+            if !ctl::running() {
+                if let Err(e) = ctl::start() {
+                    // 面板没开时 toast 落不到界面上，状态卡会显示"未运行"，够定位
+                    core2.toast(&e);
+                }
+            }
+        });
+    }
 
     // ---- 托盘。起不来就退化成"纯面板"模式：面板一关即退出。
     let tray = match crate::tray::Tray::build() {

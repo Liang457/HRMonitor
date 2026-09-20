@@ -1,8 +1,8 @@
 // common/hr_shared.h
 // BLE 心率设备 → 中立共享内存 BleHR_SM
 // daemon（写）与两个显示端插件（读）共用的唯一定义来源：
-//   hr_plugin.dll  → TrafficMonitor 任务栏
-//   HeartRate.dll  → MSI Afterburner 监控数据源 / OSD
+//   trafficmonitor_hr_plugin.dll  → TrafficMonitor 任务栏
+//   afterburner_hr_plugin.dll     → MSI Afterburner 监控数据源 / OSD
 //
 // 威胁模型（知情接受）：映射与互斥体都在 Local\ 会话命名空间里，用默认 DACL。
 // 同一登录会话的进程本来就能互相冒充（同用户），所以没有再收紧 ACL——收不收

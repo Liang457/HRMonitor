@@ -11,8 +11,8 @@
 #     hr-daemon.exe  hr-manager.exe  README.md
 #     config\hr-daemon.ini            示例配置
 #     docs\LICENSE、THIRD_PARTY_NOTICES.md
-#     plugins\HeartRate.dll、hr_plugin.dll
-#     scripts\                        部署/迁移脚本原样带上
+#     plugins\afterburner_hr_plugin.dll、trafficmonitor_hr_plugin.dll
+#     scripts\                        迁移/工具脚本原样带上
 #
 # 版本一致性：Cargo.toml 的 [package] version 与 common\version.h 的
 # HR_VERSION_STRING 是跨语言双副本（common\version.h 头部注释有约定），
@@ -82,8 +82,8 @@ if (-not $OutputDir) { $OutputDir = Join-Path $Root 'dist' }
 $artifacts = @(
     'build\hr-daemon.exe',
     'build\hr-manager.exe',
-    'build\plugins\HeartRate.dll',
-    'build\plugins\hr_plugin.dll'
+    'build\plugins\afterburner_hr_plugin.dll',
+    'build\plugins\trafficmonitor_hr_plugin.dll'
 )
 foreach ($a in $artifacts) {
     if (-not (Test-Path -LiteralPath (Join-Path $Root $a))) {
@@ -119,8 +119,8 @@ Copy-Item -LiteralPath (Join-Path $Root 'build\hr-daemon.exe')  -Destination $st
 Copy-Item -LiteralPath (Join-Path $Root 'build\hr-manager.exe') -Destination $stage
 Copy-Item -LiteralPath (Join-Path $Root 'README.md')            -Destination $stage
 Copy-Item -LiteralPath $ini -Destination (Join-Path $stage 'config\hr-daemon.ini')
-Copy-Item -LiteralPath (Join-Path $Root 'build\plugins\HeartRate.dll') -Destination (Join-Path $stage 'plugins\HeartRate.dll')
-Copy-Item -LiteralPath (Join-Path $Root 'build\plugins\hr_plugin.dll') -Destination (Join-Path $stage 'plugins\hr_plugin.dll')
+Copy-Item -LiteralPath (Join-Path $Root 'build\plugins\afterburner_hr_plugin.dll') -Destination (Join-Path $stage 'plugins\afterburner_hr_plugin.dll')
+Copy-Item -LiteralPath (Join-Path $Root 'build\plugins\trafficmonitor_hr_plugin.dll') -Destination (Join-Path $stage 'plugins\trafficmonitor_hr_plugin.dll')
 Copy-Item -LiteralPath (Join-Path $Root 'LICENSE')                -Destination (Join-Path $stage 'docs\LICENSE')
 Copy-Item -LiteralPath (Join-Path $Root 'THIRD_PARTY_NOTICES.md') -Destination (Join-Path $stage 'docs\THIRD_PARTY_NOTICES.md')
 Copy-Item -LiteralPath (Join-Path $Root 'scripts') -Destination (Join-Path $stage 'scripts') -Recurse

@@ -1,7 +1,7 @@
 # tools/mahm-probe/mahm-probe.ps1 -- verify the Afterburner data path without a GUI.
 #
 # Opens Afterburner's MAHM shared memory and prints the published monitoring
-# entries. This is how we confirm that HeartRate.dll is loaded, that its data
+# entries. This is how we confirm that afterburner_hr_plugin.dll is loaded, that its data
 # source was enabled, and what value it reports -- all without a GUI.
 #
 # Layout comes from <Afterburner>\SDK\Include\MAHMSharedMemory.h.

@@ -1,5 +1,5 @@
 @echo off
-REM Build HeartRate.dll -- MSI Afterburner hardware monitoring plugin (x86, static CRT).
+REM Build afterburner_hr_plugin.dll -- MSI Afterburner hardware monitoring plugin (x86, static CRT).
 REM
 REM Why x86: MSIAfterburner.exe is a 32-bit process (PE machine 0x14C) and cannot
 REM load an x64 DLL. Unrelated to hr-daemon.exe (x64); the two only exchange data
@@ -71,7 +71,7 @@ cl /nologo /LD /std:c++20 /EHsc /O2 /MT /utf-8 /W4 /sdl /guard:cf /Zi ^
    /I"..\common" ^
    /Fo"obj\\" ^
    plugin.cpp obj\version.res ^
-   /Fe:HeartRate.dll ^
+   /Fe:afterburner_hr_plugin.dll ^
    /link /INCREMENTAL:NO
 if errorlevel 1 (
     echo [ERROR] build failed
@@ -80,40 +80,40 @@ if errorlevel 1 (
 
 REM The import library and exports file are /LD byproducts; the host resolves
 REM everything by name with GetProcAddress, so it does not need them.
-del /q HeartRate.lib HeartRate.exp vc140.pdb 2>nul
+del /q afterburner_hr_plugin.lib afterburner_hr_plugin.exp vc140.pdb 2>nul
 
 REM --- Self-check: the DLL must be x86, and the three exports must be UNDECORATED.
 REM     A decorated name such as _GetSourceData@4 would make the host fail to load us.
 REM     (No $ anchor on the name: /Zi makes dumpbin print "name = _name" notes,
 REM     but the leading space still rejects a decorated "_Name@4".)
-dumpbin /nologo /headers HeartRate.dll | findstr /i /c:"14C machine" >nul
+dumpbin /nologo /headers afterburner_hr_plugin.dll | findstr /i /c:"14C machine" >nul
 if errorlevel 1 (
     echo [ERROR] output is not x86 -- check that vcvarsall was initialized with x86.
     exit /b 1
 )
 for %%n in (GetSourcesNum GetSourceDesc GetSourceData) do (
-    dumpbin /nologo /exports HeartRate.dll | findstr /r /c:" %%n" >nul
+    dumpbin /nologo /exports afterburner_hr_plugin.dll | findstr /r /c:" %%n" >nul
     if errorlevel 1 (
         echo [ERROR] export %%n is missing or decorated.
         echo         The host resolves plugins by name, so the name must match exactly.
-        dumpbin /nologo /exports HeartRate.dll
+        dumpbin /nologo /exports afterburner_hr_plugin.dll
         exit /b 1
     )
 )
 
 echo.
-echo [OK] ab-plugin\HeartRate.dll  - x86
+echo [OK] ab-plugin\afterburner_hr_plugin.dll  - x86
 echo [OK] exports: GetSourcesNum / GetSourceDesc / GetSourceData
 REM DLLs ship in build\plugins\ (the release layout: repo root keeps only the
-REM exes and README.md), which is also where the deploy script looks.
+REM exes and README.md); the hr-manager panel opens this folder for manual deploy.
 if not exist "..\build\plugins" mkdir "..\build\plugins"
-copy /y HeartRate.dll "..\build\plugins\HeartRate.dll" >nul
+copy /y afterburner_hr_plugin.dll "..\build\plugins\afterburner_hr_plugin.dll" >nul
 if errorlevel 1 (
-    echo [ERROR] cannot copy to ..\build\plugins\HeartRate.dll
+    echo [ERROR] cannot copy to ..\build\plugins\afterburner_hr_plugin.dll
     exit /b 1
 )
-echo [OK] build\plugins\HeartRate.dll
+echo [OK] build\plugins\afterburner_hr_plugin.dll
 echo.
-echo Deploy into Afterburner and enable it - needs administrator:
-echo     powershell -ExecutionPolicy Bypass -File scripts\deploy-afterburner-plugin.ps1
+echo Manual deploy: copy the DLL into "MSI Afterburner\Plugins\Monitoring",
+echo restart Afterburner, then enable it in its Settings - Monitoring tab.
 endlocal

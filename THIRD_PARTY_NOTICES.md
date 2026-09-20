@@ -56,7 +56,7 @@ Afterburner 的游戏内 OSD 本身就是 RTSS 渲染的（Afterburner 自己不
 | 组件 | 依赖 |
 |---|---|
 | `hr-daemon.exe` | Windows SDK 的 C++/WinRT 头 + `windowsapp.lib`（BLE）；只写中立共享内存 |
-| `HeartRate.dll`（Afterburner 插件） | 仅 `kernel32`（`/MT` 静态 CRT）。实测 `dumpbin /dependents` 只有 KERNEL32.dll |
-| `hr_plugin.dll`（TrafficMonitor 插件） | 仅 `kernel32`（`/MT` 静态 CRT） |
+| `afterburner_hr_plugin.dll`（Afterburner 插件） | 仅 `kernel32`（`/MT` 静态 CRT）。实测 `dumpbin /dependents` 只有 KERNEL32.dll |
+| `trafficmonitor_hr_plugin.dll`（TrafficMonitor 插件） | 仅 `kernel32`（`/MT` 静态 CRT） |
 | `hr-manager.exe` | GUI 栈用第三方 crate：`wry`（WebView2 绑定）+ `tao` + `tray-icon` + `serde`/`serde_json`，均 MIT/Apache-2.0 双许可，版本由 `tools/hr-manager/Cargo.lock` 锁定；其余部分（配置/进程/注册表/共享内存）只用 Rust 标准库 + 手写 `extern "system"` 声明 |
 | `osd_test.exe` | 系统自带的 `d3d11` / `dxgi`（D3D11 画布，用来验证 OSD） |

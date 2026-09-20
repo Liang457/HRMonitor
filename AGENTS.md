@@ -11,8 +11,8 @@ BLE 心率广播设备（服务 `0x180D`，手表、手环等）→ Windows：`h
 
 ```cmd
 cmd /c daemon\build.cmd           :: build\hr-daemon.exe             (C++, x64)
-cmd /c ab-plugin\build.cmd        :: build\plugins\HeartRate.dll     (C++, x86，必须 x86)
-cmd /c tm-plugin\build.cmd        :: build\plugins\hr_plugin.dll     (C++, x64)
+cmd /c ab-plugin\build.cmd        :: build\plugins\afterburner_hr_plugin.dll     (C++, x86，必须 x86)
+cmd /c tm-plugin\build.cmd        :: build\plugins\trafficmonitor_hr_plugin.dll (C++, x64)
 cmd /c tools\osd_test\build.cmd   :: build\osd_test.exe              (C++, x64)
 cmd /c tools\hr-manager\build.cmd :: build\hr-manager.exe            (Rust，GUI 栈依赖见下)
 ```
@@ -63,8 +63,9 @@ cmd /c tools\hr-manager\build.cmd :: build\hr-manager.exe            (Rust，GUI
   hr-manager 起子进程读流，自己不碰蓝牙。
 - hr-manager（Rust）= 托盘常驻 + 按需弹出的 WebView2 配置面板 + CLI 子命令：管理 daemon
   生命周期（FindWindowW+WM_CLOSE 优雅停 / OpenMutexW 探活）、读写 ini、读共享内存显示实时
-  状态、调度扫描、管理开机自启（注册表 Run 键）。面板关闭即整体销毁 WebView2（内存回落），
-  托盘进程本身保留。
+  状态、调度扫描、管理开机自启（注册表 Run 键）。**启动时兜底确保 daemon 在跑**（后台线程
+  探活，没跑就 `ctl::start()`）——开机自启只拉起 manager 本身，daemon 靠这一下带起来。
+  面板关闭即整体销毁 WebView2（内存回落），托盘进程本身保留。
 - **依赖策略：业务代码不引第三方**。C++ 只用 Windows SDK（BLE 用自带 C++/WinRT）。Rust 端
   仅有的例外是 hr-manager 的 GUI 栈（wry + tao + tray-icon + serde/serde_json）和构建期
   专用的 winresource（build.rs 嵌 PE 版本信息，不进运行时），Cargo.lock 锁
@@ -85,7 +86,8 @@ cmd /c tools\hr-manager\build.cmd :: build\hr-manager.exe            (Rust，GUI
 - 换行符约定：.cmd/.bat/.ps1 = CRLF；.cpp/.h/.rs/.md/.toml/.ini/.lock = LF。
 - **自启用注册表 Run 键**（`HKCU\...\CurrentVersion\Run`，值名 `BleHRManager`，指向
   `hr-manager.exe --minimized`）：无管理员、天然在当前登录会话，共享内存 `Local\` 命名空间
-  因此一定对。老版本的计划任务方案已废弃（会话 0 命名空间的坑随之消失），残留清理用
+  因此一定对。Run 键只拉起 manager，daemon 由 manager 启动时的兜底探活带起来（见架构边界）。
+  老版本的计划任务方案已废弃（会话 0 命名空间的坑随之消失），残留清理用
   `scripts\uninstall-task.ps1`，面板会检测残留并提示。
 - daemon 命令行参数（`--demo`/`--address`）优先于 hr-daemon.ini；daemon 单实例互斥体
   `Local\BleHR_daemon`，manager 单实例互斥体 `Local\BleHR_manager`。第二个 manager
@@ -112,27 +114,25 @@ cmd /c tools\hr-manager\build.cmd :: build\hr-manager.exe            (Rust，GUI
 - 真机长测尚未完成（开发期实测设备为华为手表）：扫描→连接→订阅→设备名已验收；心率进共享内存、息屏/
   超时断开后的长时间重连还在测。协议按标准 BLE HR Profile 实现，链路用 demo 源验收过。
 
-## 部署脚本（scripts\）
+## 第三方插件部署（手动引导）
 
-- 发行 zip 的 `scripts\` 子目录原样带上部署脚本；hr-manager 面板的部署按钮经
-  `ipc.rs::run_deploy_script` 调它们（tm 的部署把 `integration.tm_dir` 传给脚本）。
-- `deploy-afterburner-plugin.ps1`（Afterburner 4.6.6 实测）：装 HeartRate.dll 进
-  `<AB>\Plugins\Monitoring\`、写 Help 说明、置 `Profiles\MSIAfterburner.cfg` 的
-  `[Monitoring] HeartRate.dll=1` 与根配置 `EnablePlugins=1`。**故意不动**
-  `[Settings] Sources=`/`[Source Heart rate]` 段——那是 Afterburner 自己的数据结构，
-  硬改会被覆盖；OSD 显示仍要用户在界面里勾两下。
-- `configure-trafficmonitor.ps1`（V1.86 实测）：部署 hr_plugin.dll 进 `<TM>\plugins\`，
-  把项目 id（默认 `hr`）并进 `config.ini` 的 `plugin_display_item`。编码按锚点键探测、
-  按原编码写回（这份配置的编码在变）；`show_task_bar_wnd` 写 true 不一定生效，
-  任务栏没出现要用户手动开一次（开过会被记住）。
-- 部署 DLL 的共同细节：先关宿主（宿主退出时会把内存配置整个写回，改文件必须在它
-  停着时做）、SHA256 相同则跳过替换、临时文件名不带 .dll 后缀（防宿主扫 `*.dll`
-  时加载半成品）、`File.Replace` 原子替换、旧 DLL 留 `.bak`。
+- 1.2.0 起没有自动部署脚本：面板的"第三方程序接入"区是三个"打开目录"按钮
+  （`ipc.rs::open_folder` → `ShellExecuteW("open")`）+ 固定步骤说明，用户自己复制 DLL。
+  以前的 powershell 方案死在 `CreateProcessW` 拿裸名 `powershell.exe` 当 lpApplicationName
+  （不走 PATH 搜索，报错误码 2），别再走外部脚本的老路。
+- 目录定位：`plugins` = `exe_dir\plugins`（dev 布局和发行布局都成立）；`tm`/`ab` 优先读
+  ini 的 `integration.tm_dir` / `ab_dir`，留空则只探测 `%ProgramFiles%` /
+  `%ProgramFiles(x86)%` 下的宿主目录（认宿主 exe），**故意不硬编码 D:\ 这类机器布局**，
+  探测不到就报错让用户填目录。打开的是 `<TM>\plugins` / `<AB>\Plugins\Monitoring`
+  （子目录不存在就退回打开安装根目录）。
+- 两个 DLL 名字：`afterburner_hr_plugin.dll` / `trafficmonitor_hr_plugin.dll`。改名时
+  build.cmd（/Fe:、del 副产品、dumpbin 自查、copy）、pack.ps1、version.rc 的
+  HR_BIN_DESC、各处注释要一起动；旧名 DLL 留在宿主目录会出现重复"心率"项。
 - `run-daemon.cmd`：前台调试跑 daemon（日志直出当前控制台，Ctrl+C 停）。
 
 ## 文档
 
-- `README.md`：用法、配置、排查（hr-daemon/hr-manager 命令行、ini 键表、部署脚本）。
+- `README.md`：用法、配置、排查（hr-daemon/hr-manager 命令行、ini 键表、插件手动部署）。
 - `THIRD_PARTY_NOTICES.md`：`tm-plugin/PluginInterface.h` 取自 TrafficMonitor，Anti-996
   许可，分发约束见此。
 
@@ -142,5 +142,3 @@ cmd /c tools\hr-manager\build.cmd :: build\hr-manager.exe            (Rust，GUI
 - Rust：错误一律 `Result<_, String>`（给人看的中文消息）；不做呈现的库模块（daemon_ctl/
   scan_job/autostart/config）与做呈现的 cli/gui 分层，打印/弹提示只在后者；共享状态集中在
   `state.rs::Core`，WebView 只在主线程碰，回推一律走 `UserEvent::Eval` 经主线程执行。
-- `scripts\` 里的部署脚本改第三方程序配置前的固定模式：先关目标进程、备份 `.bak`、
-  原子写回、只动属于自己的那一行——新脚本沿用这个模式。

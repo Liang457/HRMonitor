@@ -6,17 +6,17 @@
 ```
 BLE 心率设备（心率广播） ──BLE──▶ hr-daemon.exe ──写──▶ Local\BleHR_SM（64 字节共享内存）
                           连接/重连/扫描               │
-                                          ┌────────────┼────────────┐
-                                          ▼            ▼            ▼
-                                 HeartRate.dll  hr_plugin.dll  hr-manager.exe
-                                  Afterburner OSD / 任务栏 / 托盘 + 配置面板
+                                          ┌──────────────────┼──────────────────┐
+                                          ▼                  ▼                  ▼
+                     afterburner_hr_plugin.dll  trafficmonitor_hr_plugin.dll  hr-manager.exe
+                              Afterburner OSD            / 任务栏 / 托盘 + 配置面板
 ```
 
 daemon 只负责采集和写共享内存，蓝牙全在它这边；三个读端各自去读，互不依赖。
 
 `hr-manager.exe` 是管理器：托盘常驻，配置面板（WebView2 渲染的 HTML 单页）按需弹出、
-关闭即整体销毁；同一个 exe 带 CLI 子命令，开机自启、选表扫描、重启采集、部署脚本都在
-它身上。
+关闭即整体销毁；同一个 exe 带 CLI 子命令，开机自启、选表扫描、重启采集都在它身上，
+第三方插件的部署改成了"打开插件目录 + 手动复制"的引导。
 
 BLE 走 Windows SDK 自带的 C++/WinRT（链接 `windowsapp.lib`），两个插件只依赖 `kernel32`；
 hr-manager 的 GUI 栈（wry + tao + tray-icon）和构建期嵌版本信息的 winresource 是仅有的
@@ -30,7 +30,7 @@ hr-manager 的 GUI 栈（wry + tao + tray-icon）和构建期嵌版本信息的 
 - **两个显示端**：Afterburner 里是一条名为 `Heart rate` 的原生监控数据源（bpm），
   TrafficMonitor 里是任务栏上的一项 `HR 128`
 - **管理器 hr-manager**：托盘常驻 + 配置面板，实时心率、扫描选表、改配置、开机自启、
-  调部署脚本都在一页里
+  打开插件目录都在一页里
 - **模拟源**：`demo=1` 时用心率随机游走代替手表，没有表也能验通整条链路
 - **设备区分**：按 MAC 直连，换手表只改 `address` 一行
 - **版本一致**：四个 exe/DLL 的文件属性带版本号（资源管理器 → 属性 → 详细信息），
@@ -50,13 +50,13 @@ HRMonitor\
 │  ├─ version.h                产品版本号（C++ 侧唯一定义，与 Cargo.toml 双副本同步）
 │  └─ version.rc.in            各 exe/DLL 共用的版本资源模板（各组件目录里有自己的壳）
 ├─ daemon\                     hr-daemon.exe（C++，x64）：采集 + 写共享内存
-├─ ab-plugin\                  HeartRate.dll（C++，x86）：Afterburner 监控数据源
-├─ tm-plugin\                  hr_plugin.dll（C++，x64）：TrafficMonitor 插件
+├─ ab-plugin\                  afterburner_hr_plugin.dll（C++，x86）：Afterburner 监控数据源
+├─ tm-plugin\                  trafficmonitor_hr_plugin.dll（C++，x64）：TrafficMonitor 插件
 ├─ tools\
 │  ├─ hr-manager\              hr-manager.exe（Rust + wry）：托盘/配置面板/CLI
 │  ├─ mahm-probe\              读 Afterburner 共享内存的小脚本，排查用
 │  └─ osd_test\                osd_test.exe（C++）：D3D11 清屏窗口，验证 OSD 用
-├─ scripts\                    部署 / 发行打包 / 迁移 / 旧自启清理脚本
+├─ scripts\                    发行打包 / 迁移 / 旧自启清理脚本
 └─ build\                      构建产物（不入库）：exe 在根，DLL 在 plugins\，示例 ini 在 config\
 ```
 
@@ -69,8 +69,8 @@ HRMonitor\
 
 ```cmd
 cmd /c daemon\build.cmd           :: -> build\hr-daemon.exe            (C++, x64)
-cmd /c ab-plugin\build.cmd        :: -> build\plugins\HeartRate.dll    (C++, x86, 需要 x86 工具集)
-cmd /c tm-plugin\build.cmd        :: -> build\plugins\hr_plugin.dll    (C++, x64)
+cmd /c ab-plugin\build.cmd        :: -> build\plugins\afterburner_hr_plugin.dll    (C++, x86, 需要 x86 工具集)
+cmd /c tm-plugin\build.cmd        :: -> build\plugins\trafficmonitor_hr_plugin.dll (C++, x64)
 cmd /c tools\osd_test\build.cmd   :: -> build\osd_test.exe             (C++, x64)
 cmd /c tools\hr-manager\build.cmd :: -> build\hr-manager.exe           (Rust + WebView2 GUI)
 ```
@@ -164,7 +164,8 @@ ini 存在但读不出来（被编辑器锁着、存成了别的编码）时 hr-
 | `[display]` | `refresh_ms` | 1000 | 采样/推送周期（毫秒） |
 | `[log]` | `max_kb` | 4096 | 单个日志文件的上限（KB），写满就轮转 |
 | `[log]` | `debug` | 否 | `是` = 连每条心率都写进日志（排查用，平时别开） |
-| `[integration]` | `tm_dir` | 空 | TrafficMonitor 安装目录（面板的部署按钮会传给脚本） |
+| `[integration]` | `tm_dir` | 空 | TrafficMonitor 安装目录（面板"打开 TrafficMonitor 插件目录"用，留空自动探测） |
+| `[integration]` | `ab_dir` | 空 | MSI Afterburner 安装目录（面板"打开 Afterburner 插件目录"用，留空自动探测） |
 
 `timeout_ms` 一个数用在三处：daemon 判显示超时、BLE 层判连接失效（这么久没收到通知就断开
 重连）、daemon 不在时插件的兜底。
@@ -214,26 +215,21 @@ build\hr-manager.exe restart
 ### TrafficMonitor（任务栏）
 
 去 GitHub Releases 下载 `TrafficMonitor_V1.86_x64_Lite.zip`，解压到比如
-`D:\Program Files\TrafficMonitor`：
+`D:\Program Files\TrafficMonitor`，然后手动装插件：
 
-```powershell
-powershell -ExecutionPolicy Bypass -File scripts\configure-trafficmonitor.ps1
-```
+1. 退出 TrafficMonitor，把 `trafficmonitor_hr_plugin.dll` 复制到
+   `<TrafficMonitor>\plugins\`（开发构建在 `build\plugins\`，发行包在 `plugins\`），
+   再启动 TrafficMonitor——它启动时扫 `plugins\*.dll` 加载插件。
+2. 右键通知区图标 → 显示任务栏窗口，开一次会被记住。
+3. 任务栏上还没有 `HR` 项的话，右键任务栏上的 TrafficMonitor 区域 → 显示设置 →
+   勾上"心率"。
 
-脚本会关掉 TrafficMonitor，把插件 `hr_plugin.dll` 替换进 `plugins\`（旧文件留成
-`.bak`，内容相同则跳过），把 `hr` 加进 `plugin_display_item`、写上
-`show_task_bar_wnd=true`，再启动它。插件 DLL 依次从 `<仓库>\build\plugins\`、
-`<仓库>\plugins\`、`<仓库>\` 找，都不在就只改配置并警告（也可用 `-PluginDll` 指定）；
-`-TmDir` 缺省时依次读 `hr-daemon.ini` 的 `integration.tm_dir`（`config\` 里的和旧位置
-的都认）和常见安装位置，改 `config.ini` 前先备份成 `config.ini.bak` 并按原编码原子写回。
+面板的"打开 TrafficMonitor 插件目录"按钮能直接打开目标文件夹：安装目录留空时按常见
+安装位置自动探测，探测不到就把它填进"TrafficMonitor 目录"再点。
 
 插件文件名必须是 `.dll`，不能是 `.tmd`：V1.86 只扫 `plugins\*.dll`
 （`PluginManager.cpp:41`），放 `.tmd` 进去"插件管理"里会是空的，且没有任何报错。插件默认
 即启用，`plugin_disabled` 是黑名单（默认空），不用去点启用。
-
-任务栏窗口没出现就右键通知区图标 → 显示任务栏窗口，开一次会被记住（`show_task_bar_wnd`
-写进 `config.ini` 不一定生效，运行时会被内存值覆盖）。任务栏上没有 `HR` 项，右键任务栏
-上的 TrafficMonitor 区域 → 显示设置 → 勾上"心率"。
 
 ### MSI Afterburner（游戏内 OSD）
 
@@ -241,18 +237,16 @@ Afterburner 的游戏内 OSD 是 RTSS 画的。本项目不碰 RTSS，而是做�
 原生监控数据源，心率就和 GPU 温度、帧率并列在同一条 OSD 里，颜色、量程、位置都在
 Afterburner 一个界面里配。
 
-```powershell
-cmd /c ab-plugin\build.cmd
-powershell -ExecutionPolicy Bypass -File scripts\deploy-afterburner-plugin.ps1
-```
+装插件手动两步：
 
-脚本自己找 `HeartRate.dll`（依次 `<仓库>\build\plugins\`、`<仓库>\plugins\`、`<仓库>\`，
-或用 `-DllPath` 指定）装进 `<Afterburner>\Plugins\Monitoring\`（旧文件留成 `.bak`）、写
-插件说明到 `Help\Plugins\Monitoring\HeartRate`、在 `Profiles\MSIAfterburner.cfg` 的
-`[Monitoring]` 段写 `HeartRate.dll=1`、确认根配置 `EnablePlugins=1`。
-`-AbDir` 缺省时按常见安装位置自动探测。全程先关 Afterburner 再改文件
-（它退出时会把内存里的配置写回 profile），只动自己那一行并留 `.bak`，卸载加 `-Uninstall`。
-它不去改 `Sources=` / `[Source ...]` 段，那是 Afterburner 自己的数据结构。
+1. 退出 Afterburner，把 `afterburner_hr_plugin.dll` 复制到
+   `<Afterburner>\Plugins\Monitoring\`（开发构建在 `build\plugins\`，发行包在
+   `plugins\`）。**先退出再复制**：Afterburner 退出时会把内存里的配置写回 profile，
+   运行中改文件会被覆盖。
+2. 启动 Afterburner，设置 → 监控 → 勾选启用本插件。
+
+面板的"打开 Afterburner 插件目录"按钮能直接打开目标文件夹：安装目录留空时按常见安装
+位置自动探测，探测不到就把它填进"Afterburner 目录"再点。
 
 启用插件后在界面里点两下：
 
@@ -274,8 +268,8 @@ powershell -ExecutionPolicy Bypass -File scripts\deploy-afterburner-plugin.ps1
 RTSS 只在自己 hook 到的 3D 程序上画 OSD。要确认 OSD 真画出来了，跑 `build\osd_test.exe`
 当画布，窗口左上角应该出现心率那一行；这一步才需要 RTSS 在跑，它不跑不影响曲线和任务栏。
 
-脚本按"目录能不能写"判断要不要管理员。Afterburner 一般以管理员运行，而它启动时会加载
-该目录下所有 DLL，别把这个目录的写权限开放给不受信任的账户。
+Afterburner 通常以管理员身份运行，而它启动时会加载该目录下所有 DLL，别把这个目录的写
+权限开放给不受信任的账户。
 
 ## 开机自启
 
@@ -283,9 +277,10 @@ RTSS 只在自己 hook 到的 3D 程序上画 OSD。要确认 OSD 真画出来�
 `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` 写 `BleHRManager` →
 `"…\hr-manager.exe" --minimized`。
 
-走 Run 键而不是计划任务：不需要管理员，登录后只出托盘不弹面板并按 ini 拉起 daemon，
-daemon 与插件天然同在一个登录会话（`Local\` 命名空间一定对），manager 退出也不连带杀
-daemon。旧版本的计划任务（`HuaweiHRDaemon`）已废弃，面板检测到残留会提示，清理跑
+走 Run 键而不是计划任务：不需要管理员，登录后只出托盘不弹面板，并自动把 daemon 拉起来
+（hr-manager 每次启动都会检查 daemon，没在跑就启动它，所以手动打开面板也一样），daemon
+与插件天然同在一个登录会话（`Local\` 命名空间一定对），manager 退出也不连带杀 daemon。
+旧版本的计划任务（`HuaweiHRDaemon`）已废弃，面板检测到残留会提示，清理跑
 `powershell -ExecutionPolicy Bypass -File scripts\uninstall-task.ps1`。想让开机后真正连上
 表，先用 hr-manager 选表保存（写 `source.address`），自启实例读的是同一份 ini。
 
@@ -304,6 +299,11 @@ daemon。旧版本的计划任务（`HuaweiHRDaemon`）已废弃，面板检测�
 `hr-daemon.ini` 移进 `config\`（原位置留 `.bak`）。**这一步必须跑**：新版程序只认
 `config\hr-daemon.ini`，不跑脚本配置会回到默认值（手表地址就丢了）。脚本可以重复执行，
 随发行包的 `scripts\` 目录一起附带；全新安装不需要跑它。
+
+从 1.1.x 升到 1.2.0 还要注意：两个插件 DLL 改名了（`HeartRate.dll` →
+`afterburner_hr_plugin.dll`，`hr_plugin.dll` → `trafficmonitor_hr_plugin.dll`）。换上新
+文件时把旧名的 DLL 删掉——旧的不删，TrafficMonitor 会出现重复的"心率"项，Afterburner
+会多出一条同名旧数据源。
 
 ## hr-daemon 命令行参数
 
@@ -338,13 +338,14 @@ hr-manager 拉起 / restart 出来的 daemon 都带 `--quiet`，不附加控制�
 | 日志 "无法启动扫描 …（蓝牙适配器关了？）" | 电脑蓝牙关了，或适配器被禁用 |
 | 日志 "未找到心率服务 0x180D" | 连上了但没有心率服务，手表那边没真正开始广播 |
 | 日志反复 "已 N 秒没有收到心率通知，判定连接失效" | 广播断了（常见于手表息屏）。daemon 会自动重连，退避 1→2→4…→30 秒 |
-| Afterburner 插件列表里没有 `HeartRate` | DLL 没拷进去 / profile 的 `[Monitoring]` 里没有 `HeartRate.dll=1` / 根配置 `EnablePlugins=0`。重跑部署脚本 |
+| Afterburner 插件列表里没有 `afterburner_hr_plugin` | DLL 没拷进 `Plugins\Monitoring\` / 设置→监控 里没勾选启用 / 根配置 `EnablePlugins=0`。按"显示端 → MSI Afterburner"重装一遍 |
 | 插件在列表里，但曲线列表里找不到 `Heart rate` | 插件被禁用了，或者数据源没在"硬件监控图表列表"里勾上 |
 | 曲线一直在动，但 OSD 上不显示 | 该项属性里 `Show in On-Screen Display` 没勾；或前台不是 3D 程序（用 `build\osd_test.exe` 当画布）；或 RTSS 没在跑 |
 | 值一直是 `--`，但任务栏正常 | daemon 和 Afterburner 不在同一个会话。用 `tools\mahm-probe\mahm-probe.ps1` 看 MAHM 里那条到底是 `FLT_MAX` 还是有值，能立刻区分"插件没数据"和"OSD 没配" |
 | 任务栏没有 `HR` 项 | 见"显示端 → TrafficMonitor" |
+| 任务栏出现两个"心率"项 | 改名前的旧 `hr_plugin.dll` 还在 `plugins\` 里没删，删掉旧文件重启 TrafficMonitor |
 | 扫描中途把 hr-manager 关掉/杀掉，之后采集一直是停的 | 重开一次 hr-manager（托盘/面板即可）：它看到 `config\` 里的 `scan-pending` 标记会自动把 hr-daemon 拉回来（标记在扫描停 daemon 前写下、daemon 确认回来后删除） |
-| TrafficMonitor 悬浮提示显示"版本不匹配" | 新 daemon 配了旧 hr_plugin.dll：共享内存 version 校验拦住了，两边要一起更新 |
+| TrafficMonitor 悬浮提示显示"版本不匹配" | 新 daemon 配了旧版插件 DLL：共享内存 version 校验拦住了，两边要一起更新 |
 | `hr-manager` 报"既不是 UTF-8 也不是 UTF-16" | 配置文件被存成了别的编码，用记事本另存为 UTF-8，或删掉它让 hr-manager 重建 |
 | 中文乱码 | 只在自编译时可能发生：源码是无 BOM UTF-8，各 `build.cmd` 必须带 `/utf-8` |
 

@@ -2,7 +2,7 @@
 //
 // 前端 window.ipc.postMessage(JSON 字符串)；这里解析、执行、用
 // Core::reply（evaluate_script）把结果配对 id 送回去。
-// 快命令（读配置、注册表开关）就地执行；慢命令（重启 daemon、扫描、部署脚本）
+// 快命令（读配置、注册表开关）就地执行；慢命令（重启 daemon、扫描）
 // 丢线程，结果经 proxy 送回 —— ipc 回调线程不能被 20 秒的 daemon 收尾卡住。
 use crate::autostart;
 use crate::config;
@@ -10,7 +10,7 @@ use crate::daemon_ctl as ctl;
 use crate::state::Core;
 use crate::{scan_job, win};
 use serde_json::{json, Value};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
@@ -245,52 +245,13 @@ pub fn dispatch(core: &Arc<Core>, body: &str) {
             core.reply(id, json!({ "ok": rc > 32, "error": if rc > 32 { Value::Null } else { json!("打开文件夹失败") } }));
         }
 
-        "run_script" => {
+        "open_folder" => {
+            // 打开第三方宿主的插件目录，引导手动部署。目录定位失败回 error，
+            // 面板会 toast（安装目录可在上方手填，留空则按常见位置探测）。
             let which = arg("which").as_str().unwrap_or("").to_string();
-            if !matches!(which.as_str(), "tm" | "ab") {
-                core.reply(id, json!({ "ok": false, "error": "未知脚本" }));
-                return;
-            }
-            let core2 = core.clone();
-            std::thread::spawn(move || match run_deploy_script(&which) {
-                Ok((code, output)) => {
-                    let tail: String = {
-                        // 只留尾部一段，界面显示得下；完整输出在控制台跑也能拿到
-                        let chars: Vec<char> = output.chars().collect();
-                        let start = chars.len().saturating_sub(3000);
-                        chars[start..].iter().collect()
-                    };
-                    core2.reply(id, json!({ "ok": code == 0, "code": code, "output": tail }));
-                }
-                Err(e) => core2.reply(id, json!({ "ok": false, "error": e })),
-            });
-        }
-
-        "run_script_elevated" => {
-            let which = arg("which").as_str().unwrap_or("").to_string();
-            match script_path(&which) {
-                Some(script) => {
-                    let core2 = core.clone();
-                    // ShellExecuteW("runas") 会同步弹 UAC 等用户点，丢线程，
-                    // 别把 IPC 回调（主线程）卡在 UAC 弹窗上
-                    std::thread::spawn(move || {
-                        let args = powershell_command_args(&script, &tm_dir_arg());
-                        let params = args.iter().map(|a| crate::proc::quote_arg(a)).collect::<Vec<_>>().join(" ");
-                        let exe_w = win::wide("powershell.exe");
-                        let verb = win::wide("runas");
-                        let params_w = win::wide(&params);
-                        let rc = unsafe {
-                            win::ShellExecuteW(std::ptr::null_mut(), verb.as_ptr(), exe_w.as_ptr(), params_w.as_ptr(), std::ptr::null(), win::SW_SHOWNORMAL)
-                        };
-                        if rc > 32 {
-                            core2.toast("已请求管理员权限运行，请看弹出的窗口；完成后回到这里确认状态");
-                            core2.reply(id, json!({ "ok": true }));
-                        } else {
-                            core2.reply(id, json!({ "ok": false, "error": format!("提权启动失败（错误码 {}；用户可能拒绝了 UAC）", rc) }));
-                        }
-                    });
-                }
-                None => core.reply(id, json!({ "ok": false, "error": "找不到部署脚本（scripts 目录不在程序旁边）" })),
+            match open_plugin_folder(&which) {
+                Ok(()) => core.reply(id, json!({ "ok": true })),
+                Err(e) => core.reply(id, json!({ "ok": false, "error": e })),
             }
         }
 
@@ -338,48 +299,56 @@ fn restore_daemon_if_needed(core: &Arc<Core>) -> Result<(), String> {
     }
 }
 
-fn script_path(which: &str) -> Option<PathBuf> {
-    let name = match which {
-        "tm" => "configure-trafficmonitor.ps1",
-        "ab" => "deploy-afterburner-plugin.ps1",
-        _ => return None,
+/// 打开"第三方程序部署"相关目录（部署改成手动复制后的入口）：
+///   plugins —— 本程序旁边的 plugins\（发行包里两个插件 DLL 就在这）
+///   tm      —— TrafficMonitor 的 plugins\
+///   ab      —— MSI Afterburner 的 Plugins\Monitoring\
+/// tm/ab 的安装目录优先取 ini（integration.tm_dir / ab_dir），留空则按常见
+/// 安装位置探测；找不到不打开任何窗口，返回给人看的错误让面板提示。
+fn open_plugin_folder(which: &str) -> Result<(), String> {
+    let dir = match which {
+        "plugins" => config::exe_dir().join("plugins"),
+        "tm" | "ab" => {
+            let cfg = config::load()?.0;
+            let configured = if which == "tm" { &cfg.tm_dir } else { &cfg.ab_dir };
+            let configured = configured.trim().to_string();
+            let root = if configured.is_empty() {
+                detect_host_dir(which)?
+            } else {
+                PathBuf::from(configured)
+            };
+            let sub = if which == "tm" { "plugins" } else { r"Plugins\Monitoring" };
+            let target = root.join(sub);
+            if target.is_dir() { target } else { root }
+        }
+        _ => return Err("未知目录".to_string()),
     };
-    let dir = config::exe_dir();
-    let candidates = [dir.join("scripts").join(name), dir.join("..").join("scripts").join(name)];
-    candidates.into_iter().find(|p| p.exists())
-}
-
-fn tm_dir_arg() -> String {
-    config::load()
-        .map(|(cfg, _, _)| cfg.tm_dir)
-        .unwrap_or_default()
-}
-
-/// powershell 的完整参数表：先强制 UTF-8 输出（面板里中文不乱码），再跑脚本。
-/// 每个元素独立成参，交给 quote_arg 转义，不会被命令行解析拆散。
-fn powershell_command_args(script: &PathBuf, tm_dir: &str) -> Vec<String> {
-    let mut extra = String::new();
-    if script.file_name().map(|n| n == "configure-trafficmonitor.ps1").unwrap_or(false) && !tm_dir.is_empty() {
-        extra = format!(" -TmDir '{}'", tm_dir.replace('\'', "''"));
+    if !dir.is_dir() {
+        return Err(format!("目录不存在：{}", dir.display()));
     }
-    let inner = format!(
-        "[Console]::OutputEncoding=[System.Text.Encoding]::UTF8; & '{}'{}",
-        script.display().to_string().replace('\'', "''"),
-        extra
-    );
-    vec![
-        "-NoProfile".into(),
-        "-ExecutionPolicy".into(),
-        "Bypass".into(),
-        "-Command".into(),
-        inner,
-    ]
+    let d = win::wide(&dir.display().to_string());
+    let verb = win::wide("open");
+    let rc = unsafe {
+        win::ShellExecuteW(std::ptr::null_mut(), verb.as_ptr(), d.as_ptr(), std::ptr::null(), std::ptr::null(), win::SW_SHOWNORMAL)
+    };
+    if rc > 32 { Ok(()) } else { Err("打开文件夹失败".to_string()) }
 }
 
-/// 隐藏窗口跑部署脚本，收走全部输出（stdout+stderr 同一根管道）
-fn run_deploy_script(which: &str) -> Result<(u32, String), String> {
-    let script = script_path(which)
-        .ok_or_else(|| "找不到部署脚本（scripts 目录不在程序旁边）".to_string())?;
-    let args = powershell_command_args(&script, &tm_dir_arg());
-    crate::proc::run_and_wait_capture(Path::new("powershell.exe"), &args, 600_000)
+/// 按常见安装位置探测宿主目录（探测条件沿用原部署脚本：认宿主 exe）。
+/// 故意不硬编码 D:\ 之类的机器布局——找不到就让用户在面板里填目录。
+fn detect_host_dir(which: &str) -> Result<PathBuf, String> {
+    let (name, marker) = if which == "tm" {
+        ("TrafficMonitor", "TrafficMonitor.exe")
+    } else {
+        ("MSI Afterburner", "MSIAfterburner.exe")
+    };
+    for var in ["ProgramFiles", "ProgramFiles(x86)"] {
+        if let Some(base) = std::env::var_os(var) {
+            let cand = PathBuf::from(base).join(name);
+            if cand.join(marker).exists() {
+                return Ok(cand);
+            }
+        }
+    }
+    Err(format!("没找到 {}（按常见安装位置探测过了）。在上方填一下安装目录再试", name))
 }

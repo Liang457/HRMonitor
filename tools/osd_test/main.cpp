@@ -12,7 +12,7 @@
 // text to RTSS, which is the component that actually hooks the 3D app. So this
 // canvas is still what you need to check the OSD after configuring a data
 // source (e.g. "Heart rate") to show up there. hr-daemon does not touch RTSS at
-// all anymore; the data reaches the OSD through the HeartRate.dll plugin.
+// all anymore; the data reaches the OSD through the afterburner_hr_plugin.dll plugin.
 //
 // No font library, no shader compiler and no external dependency: the frame is
 // an animated clear of the back buffer (visually obvious that the app is alive)

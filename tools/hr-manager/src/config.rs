@@ -31,6 +31,7 @@ pub struct Config {
 
     // [integration]
     pub tm_dir: String,
+    pub ab_dir: String,
 }
 
 impl Default for Config {
@@ -48,6 +49,7 @@ impl Default for Config {
             log_max_kb: 4096,
             log_debug: false,
             tm_dir: String::new(),
+            ab_dir: String::new(),
         }
     }
 }
@@ -72,6 +74,7 @@ pub const FIELDS: &[Field] = &[
     Field { key: "log_kb",       desc: "日志文件上限",                 unit: "KB" },
     Field { key: "debug",        desc: "日志打印每条心率（排查用）",   unit: "" },
     Field { key: "tm_dir",       desc: "TrafficMonitor 安装目录",      unit: "" },
+    Field { key: "ab_dir",       desc: "MSI Afterburner 安装目录",     unit: "" },
 ];
 
 impl Config {
@@ -88,6 +91,7 @@ impl Config {
             "log_kb" => self.log_max_kb.to_string(),
             "debug" => yn(self.log_debug),
             "tm_dir" => self.tm_dir.clone(),
+            "ab_dir" => self.ab_dir.clone(),
             _ => return None,
         })
     }
@@ -126,12 +130,12 @@ impl Config {
             "refresh" => self.refresh_ms = range_i32(&v, "刷新周期", 200, 60_000)?,
             "log_kb" => self.log_max_kb = range_i32(&v, "日志上限", 64, 1_048_576)?,
             "debug" => self.log_debug = parse_bool(&v)?,
-            "tm_dir" => {
+            "tm_dir" | "ab_dir" => {
                 // 文本项要挡住换行：写下去就是往 INI 里注入行甚至整个 [section]
                 if v.contains('\r') || v.contains('\n') {
                     return Err("不能包含换行".into());
                 }
-                self.tm_dir = v;
+                if key == "tm_dir" { self.tm_dir = v; } else { self.ab_dir = v; }
             }
             _ => return Err(format!("未知配置项：{}", key)),
         }
@@ -173,8 +177,10 @@ impl Config {
              debug={}\r\n\
              \r\n\
              [integration]\r\n\
-             ; TrafficMonitor 安装目录（只给 hr-manager 的部署按钮/脚本用）\r\n\
-             tm_dir={}\r\n",
+             ; TrafficMonitor / MSI Afterburner 的安装目录，给 hr-manager 的
+             ; \x22打开插件目录\x22按钮用；留空则按常见安装位置自动探测\r\n\
+             tm_dir={}\r\n\
+             ab_dir={}\r\n",
             b01(self.demo),
             self.address,
             self.scan_timeout_ms,
@@ -184,7 +190,8 @@ impl Config {
             self.refresh_ms,
             self.log_max_kb,
             b01(self.log_debug),
-            self.tm_dir
+            self.tm_dir,
+            self.ab_dir
         );
         s
     }
@@ -250,6 +257,7 @@ impl Config {
             log_max_kb: geti(&m, "log.max_kb", d.log_max_kb),
             log_debug: getb(&m, "log.debug", d.log_debug),
             tm_dir: gets(&m, "integration.tm_dir", &d.tm_dir),
+            ab_dir: gets(&m, "integration.ab_dir", &d.ab_dir),
         }
     }
 

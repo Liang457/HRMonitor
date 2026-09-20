@@ -80,12 +80,6 @@
   .banner { background: #3a2b18; border: 1px solid #6b5320; color: #ffd58a; border-radius: 8px; padding: 8px 12px; font-size: 12.5px; margin-bottom: 10px; }
   .chk { display: flex; align-items: center; gap: 8px; font-size: 13px; }
   .chk input { accent-color: var(--accent); width: 15px; height: 15px; }
-  pre.out {
-    background: var(--bg); border: 1px solid var(--line); border-radius: 8px;
-    padding: 8px 10px; font-size: 11.5px; max-height: 160px; overflow: auto;
-    white-space: pre-wrap; word-break: break-all; margin: 10px 0 0; color: var(--dim);
-    display: none;
-  }
   footer { color: #56657e; font-size: 11px; text-align: center; margin-top: 6px; }
 
   /* toast */
@@ -159,14 +153,22 @@
       <label class="switch"><input type="checkbox" id="chkAutostart"><span></span></label>
       开机自启（登录后只出托盘，不弹面板）
     </div>
-    <h2 style="margin-top:4px">第三方程序部署（需要先构建好对应 DLL）</h2>
-    <div class="row" style="margin-top:6px">
-      <button id="btnTm">配置 TrafficMonitor</button>
-      <button id="btnTmAdmin" title="目录写不动时用这个（弹 UAC）">管理员…</button>
-      <button id="btnAb">部署 Afterburner 插件</button>
-      <button id="btnAbAdmin" title="目录写不动时用这个（弹 UAC）">管理员…</button>
+    <h2 style="margin-top:4px">第三方程序接入（手动复制 DLL）</h2>
+    <div class="hint" style="margin:6px 0 0">
+      插件 DLL 就在本程序的 <b>plugins\</b> 文件夹里，复制到对应宿主的插件目录、重启宿主即可：
     </div>
-    <pre class="out" id="scriptOut"></pre>
+    <div class="hint" style="margin:2px 0 0">
+      · TrafficMonitor → 复制 <b>trafficmonitor_hr_plugin.dll</b> 到 <b>plugins\</b>，
+      重启后在 设置→插件 里把“心率”加进显示项<br>
+      · MSI Afterburner → 复制 <b>afterburner_hr_plugin.dll</b> 到 <b>Plugins\Monitoring\</b>，
+      重启后在 设置→监控 里启用插件，再把“心率”加进 OSD 显示项<br>
+      · 装过旧名 DLL（HeartRate.dll / hr_plugin.dll）的先删掉旧文件，否则会出现重复的“心率”项
+    </div>
+    <div class="row" style="margin-top:10px">
+      <button id="btnOpenPlugins">打开插件文件夹</button>
+      <button id="btnOpenTm">打开 TrafficMonitor 插件目录</button>
+      <button id="btnOpenAb">打开 Afterburner 插件目录</button>
+    </div>
   </div>
 
   <footer id="paths">hr-manager</footer>
@@ -304,7 +306,8 @@ const FIELDS = [
   { key: "refresh",      kind: "number",desc: "刷新/采样周期",           sub: "毫秒" },
   { key: "log_kb",       kind: "number",desc: "日志文件上限",            sub: "KB，写满轮转" },
   { key: "debug",        kind: "bool",  desc: "日志打印每条心率",        sub: "排查用，平时别开" },
-  { key: "tm_dir",       kind: "text",  desc: "TrafficMonitor 目录",     sub: "部署脚本自动探测用" }
+  { key: "tm_dir",       kind: "text",  desc: "TrafficMonitor 目录",     sub: "“打开插件目录”用，留空自动探测" },
+  { key: "ab_dir",       kind: "text",  desc: "Afterburner 目录",        sub: "“打开插件目录”用，留空自动探测" }
 ];
 let currentAddress = "";
 
@@ -429,32 +432,16 @@ function bind() {
     });
   };
 
-  const scriptBtn = function (btnId, which) {
+  const openFolder = function (btnId, which) {
     $(btnId).onclick = function () {
-      if (!confirm("要修改第三方程序的配置文件，脚本会先关掉对应程序再改，完成前别手动打开它。继续？")) return;
-      $(btnId).disabled = true;
-      const out = $("scriptOut");
-      out.style.display = "block";
-      out.textContent = "运行中…";
-      __hr.call("run_script", { which: which }).then(function (r) {
-        $(btnId).disabled = false;
-        if (r.ok) { out.textContent = "✔ 完成\n" + (r.output || ""); toast("部署完成，详见输出"); }
-        else { out.textContent = "✘ 失败（退出码 " + r.code + "）\n" + (r.output || r.error || ""); toast("部署失败，详见输出（目录写不动可试“管理员…”）"); }
+      __hr.call("open_folder", { which: which }).then(function (r) {
+        if (!r.ok) toast(r.error || "打开失败");
       });
     };
   };
-  scriptBtn("btnTm", "tm");
-  scriptBtn("btnAb", "ab");
-  const scriptBtnAdmin = function (btnId, which) {
-    $(btnId).onclick = function () {
-      if (!confirm("以管理员身份运行部署脚本（弹 UAC，窗口独立显示）？")) return;
-      __hr.call("run_script_elevated", { which: which }).then(function (r) {
-        if (!r.ok) toast(r.error || "提权失败");
-      });
-    };
-  };
-  scriptBtnAdmin("btnTmAdmin", "tm");
-  scriptBtnAdmin("btnAbAdmin", "ab");
+  openFolder("btnOpenPlugins", "plugins");
+  openFolder("btnOpenTm", "tm");
+  openFolder("btnOpenAb", "ab");
 
   $("lnkScanForAddr").onclick = function () {
     $("scanCard").scrollIntoView({ behavior: "smooth" });

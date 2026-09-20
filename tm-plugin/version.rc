@@ -1,4 +1,4 @@
-// tm-plugin\version.rc - hr_plugin.dll 的版本资源壳。
-#define HR_BIN_DESC "hr_plugin - TrafficMonitor plugin (BLE heart rate)"
+// tm-plugin\version.rc - trafficmonitor_hr_plugin.dll 的版本资源壳。
+#define HR_BIN_DESC "trafficmonitor_hr_plugin - TrafficMonitor plugin (BLE heart rate)"
 #define HR_FILETYPE 0x2L
 #include "..\common\version.rc.in"
