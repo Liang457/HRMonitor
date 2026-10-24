@@ -26,6 +26,18 @@ pub fn open(
         .with_min_inner_size(tao::dpi::LogicalSize::new(420.0f64, 560.0f64))
         .build(target)
         .map_err(|e| format!("创建窗口失败：{}", e))?;
+    // 深色标题栏：面板是深色主题，白标题栏非常突兀。DWMWA_USE_IMMERSIVE_DARK_MODE，
+    // 旧系统不认这个属性时失败无害，忽略返回值。
+    let dark: i32 = 1;
+    let hwnd = tao::platform::windows::WindowExtWindows::hwnd(&window);
+    unsafe {
+        crate::win::DwmSetWindowAttribute(
+            hwnd as *mut std::ffi::c_void,
+            20,
+            &dark as *const i32 as *const std::ffi::c_void,
+            4,
+        );
+    }
 
     let core2 = core.clone();
     // WebView2 的用户数据目录显式指到 exe 同级 webview2\：不指定的话 WebView2

@@ -13,6 +13,7 @@ mod cli;
 mod config;
 mod daemon_ctl;
 mod gui;
+mod integrations;
 mod ipc;
 mod names;
 mod panel;

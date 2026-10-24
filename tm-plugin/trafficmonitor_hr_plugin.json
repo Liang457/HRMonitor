@@ -1,0 +1,13 @@
+{
+  "name": "TrafficMonitor",
+  "dll": "trafficmonitor_hr_plugin.dll",
+  "host_exe": "TrafficMonitor.exe",
+  "plugin_subdir": "plugins",
+  "steps": [
+    "退出 TrafficMonitor",
+    "把 trafficmonitor_hr_plugin.dll 复制到 plugins 目录",
+    "启动 TrafficMonitor，在显示设置里勾选心率"
+  ],
+  "note": "旧版插件文件 HeartRate.dll、hr_plugin.dll 还在插件目录时先删除，否则会显示两个心率项",
+  "dir": ""
+}

@@ -250,6 +250,13 @@ extern "system" {
     pub fn GetWindowThreadProcessId(hwnd: Hwnd, pid: *mut u32) -> u32;
 }
 
+#[link(name = "dwmapi")]
+extern "system" {
+    /// 桌面窗口管理器属性。attr 20 = 深色标题栏（DWMWA_USE_IMMERSIVE_DARK_MODE），
+    /// 旧系统不认识时返回错误码，忽略即可。
+    pub fn DwmSetWindowAttribute(hwnd: Hwnd, attr: u32, value: *const c_void, size: u32) -> i32;
+}
+
 #[link(name = "advapi32")]
 extern "system" {
     pub fn RegOpenKeyExW(key: Hkey, sub_key: *const u16, options: u32, access: u32, result: *mut Hkey) -> i32;

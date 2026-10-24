@@ -87,10 +87,6 @@ struct HrConfig {
     int  log_max_kb = 4096;                  // 单个日志文件的上限，写满就轮转
     bool log_debug  = false;                 // 连每条心率都写进日志（排查用）
 
-    // ---- [integration] 只给 hr-manager.exe 用
-    std::wstring tm_dir;                     // TrafficMonitor 安装目录
-    std::wstring ab_dir;                     // MSI Afterburner 安装目录
-
     // 文件缺失/读失败 → 返回一份默认配置（不报错）。
     // notes 非空时，把被钳位的配置项记进去 —— 必须在 Load 里做，因为 Load 内部
     // 已经 Sanitize 过一次，拿返回值再 Sanitize 是拿不到任何提示的。

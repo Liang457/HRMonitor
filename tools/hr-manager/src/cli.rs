@@ -82,7 +82,6 @@ fn usage() {
   心率来源   demo  address  scan_timeout  backoff_min  backoff_max
   显示       timeout  refresh
   日志       log_kb  debug
-  集成       tm_dir
 
 例:
   hr-manager set demo 1          # 换成模拟心率源

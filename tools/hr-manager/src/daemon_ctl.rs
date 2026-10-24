@@ -121,7 +121,7 @@ pub fn stop() -> Result<(), String> {
         Ok(())
     } else {
         Err(format!(
-            "旧的 hr-daemon 没在 {} 秒内退出，请手动结束它再试（可能正连着手表收尾）",
+            "旧的 hr-daemon 没在 {} 秒内退出，请手动结束它再试，可能正连着手表收尾",
             names::DAEMON_STOP_TIMEOUT_MS / 1000
         ))
     }
@@ -139,7 +139,7 @@ pub fn start() -> Result<(), String> {
     proc::spawn_detached(&exe, &["--quiet"])?;
     if !wait_up(names::DAEMON_START_TIMEOUT_MS) {
         return Err(format!(
-            "{} 起来了但没注册上（多半是还有个旧的没退干净，或者启动失败）——看同目录的 hr-daemon.log",
+            "{} 已启动但没注册上，可能旧的实例还没退干净，或启动失败，看同目录的 hr-daemon.log",
             exe.display()
         ));
     }

@@ -98,8 +98,9 @@ Artifacts，推 `v*` 标签建 Release 并附完整发行包。组装/校验/压
 `scripts\pack.ps1`，本地打一个同样的包：
 `powershell -ExecutionPolicy Bypass -File scripts\pack.ps1`（产物在 `dist\`）。
 发行目录的根只放 exe 和 README.md，其余各归子目录：`config\`（示例配置）、`docs\`
-（LICENSE、THIRD_PARTY_NOTICES.md）、`plugins\`（两个 DLL）、`scripts\`。运行后生成
-的日志和 WebView2 数据分别落在 `log\`、`webview2\`，根目录不会多出别的东西。
+（LICENSE、THIRD_PARTY_NOTICES.md）、`plugins\`（两个 DLL 和各自的同名 json）、
+`scripts\`。运行后生成的日志和 WebView2 数据分别落在 `log\`、`webview2\`，根目录
+不会多出别的东西。
 `tm-plugin\PluginInterface.h` 取自
 TrafficMonitor V1.86，是"反996许可证"，发布前看一眼
 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
@@ -164,8 +165,10 @@ ini 存在但读不出来（被编辑器锁着、存成了别的编码）时 hr-
 | `[display]` | `refresh_ms` | 1000 | 采样/推送周期（毫秒） |
 | `[log]` | `max_kb` | 4096 | 单个日志文件的上限（KB），写满就轮转 |
 | `[log]` | `debug` | 否 | `是` = 连每条心率都写进日志（排查用，平时别开） |
-| `[integration]` | `tm_dir` | 空 | TrafficMonitor 安装目录（面板"打开 TrafficMonitor 插件目录"用，留空自动探测） |
-| `[integration]` | `ab_dir` | 空 | MSI Afterburner 安装目录（面板"打开 Afterburner 插件目录"用，留空自动探测） |
+
+TrafficMonitor / MSI Afterburner 的安装目录不在 ini 里：它存在 `plugins\` 下与插件
+DLL 同名的 `.json` 的 `dir` 字段，在面板"第三方程序接入"区修改。旧配置里的
+`[integration]` 段已不再读取，可以删掉。
 
 `timeout_ms` 一个数用在三处：daemon 判显示超时、BLE 层判连接失效（这么久没收到通知就断开
 重连）、daemon 不在时插件的兜底。
@@ -194,8 +197,8 @@ timeout_ms=15000  ; daemon 挂掉时插件自己的兜底超时
 1. 手表和手机"运动健康"App 配对好。
 2. 在运动健康里开启"心率广播"（不同机型路径略有差异，一般在设备 → 健康监测/心率里）。
 3. 手表停在"心率广播"页面并保持亮屏，离开该页面广播就停了。
-4. 打开 `build\hr-manager.exe` 面板点"开始扫描"选出手表：扫描会先停掉 daemon 等 2 秒
-   （手表被连着时不广播），设备随发现随出现，选完自动保存并重启 daemon，不选就点"放弃"
+4. 打开 `build\hr-manager.exe` 面板点"扫描"选出手表：扫描会先停掉 daemon 等 2 秒
+   （手表被连着时不广播），设备随发现随出现，选完自动保存并重启 daemon，不选就点"放弃选择"
    恢复采集。也可以命令行直接指定（MAC 可先用 `scan` 确认）：
 
 ```cmd
@@ -224,8 +227,9 @@ build\hr-manager.exe restart
 3. 任务栏上还没有 `HR` 项的话，右键任务栏上的 TrafficMonitor 区域 → 显示设置 →
    勾上"心率"。
 
-面板的"打开 TrafficMonitor 插件目录"按钮能直接打开目标文件夹：安装目录留空时按常见
-安装位置自动探测，探测不到就把它填进"TrafficMonitor 目录"再点。
+面板的"第三方程序接入"区有"打开 TrafficMonitor 插件目录"按钮和目录输入框：目录留空
+时按常见安装位置自动探测，探测不到就填上安装目录再点。同区的安装步骤说明来自插件
+旁边的 `trafficmonitor_hr_plugin.json`，可随发行一起携带、手改。
 
 插件文件名必须是 `.dll`，不能是 `.tmd`：V1.86 只扫 `plugins\*.dll`
 （`PluginManager.cpp:41`），放 `.tmd` 进去"插件管理"里会是空的，且没有任何报错。插件默认
@@ -245,8 +249,8 @@ Afterburner 一个界面里配。
    运行中改文件会被覆盖。
 2. 启动 Afterburner，设置 → 监控 → 勾选启用本插件。
 
-面板的"打开 Afterburner 插件目录"按钮能直接打开目标文件夹：安装目录留空时按常见安装
-位置自动探测，探测不到就把它填进"Afterburner 目录"再点。
+面板的"第三方程序接入"区有"打开 MSI Afterburner 插件目录"按钮和目录输入框：目录留空
+时按常见安装位置自动探测，探测不到就填上安装目录再点。
 
 启用插件后在界面里点两下：
 

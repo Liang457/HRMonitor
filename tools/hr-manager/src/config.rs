@@ -28,10 +28,6 @@ pub struct Config {
     // [log]
     pub log_max_kb: i32,
     pub log_debug: bool,
-
-    // [integration]
-    pub tm_dir: String,
-    pub ab_dir: String,
 }
 
 impl Default for Config {
@@ -48,8 +44,6 @@ impl Default for Config {
 
             log_max_kb: 4096,
             log_debug: false,
-            tm_dir: String::new(),
-            ab_dir: String::new(),
         }
     }
 }
@@ -63,18 +57,17 @@ pub struct Field {
 }
 
 /// 面板/CLI 里能改的所有项。顺序就是展示顺序。
+/// 第三方宿主目录不在这里：那归 plugins\*.json（src/integrations.rs）。
 pub const FIELDS: &[Field] = &[
-    Field { key: "demo",         desc: "模拟心率源（不用手表）",       unit: "" },
-    Field { key: "address",      desc: "直连的手表 MAC（留空=不连接）", unit: "" },
+    Field { key: "demo",         desc: "模拟心率源",                 unit: "" },
+    Field { key: "address",      desc: "直连的手表 MAC，留空则不连接", unit: "" },
     Field { key: "scan_timeout", desc: "每轮扫描最长",                 unit: "毫秒" },
     Field { key: "backoff_min",  desc: "重连退避下限",                 unit: "秒" },
     Field { key: "backoff_max",  desc: "重连退避上限",                 unit: "秒" },
     Field { key: "timeout",      desc: "多久没数据就显示 --",          unit: "毫秒" },
     Field { key: "refresh",      desc: "刷新/采样周期",                unit: "毫秒" },
     Field { key: "log_kb",       desc: "日志文件上限",                 unit: "KB" },
-    Field { key: "debug",        desc: "日志打印每条心率（排查用）",   unit: "" },
-    Field { key: "tm_dir",       desc: "TrafficMonitor 安装目录",      unit: "" },
-    Field { key: "ab_dir",       desc: "MSI Afterburner 安装目录",     unit: "" },
+    Field { key: "debug",        desc: "日志打印每条心率，仅排查用",   unit: "" },
 ];
 
 impl Config {
@@ -90,8 +83,6 @@ impl Config {
             "refresh" => self.refresh_ms.to_string(),
             "log_kb" => self.log_max_kb.to_string(),
             "debug" => yn(self.log_debug),
-            "tm_dir" => self.tm_dir.clone(),
-            "ab_dir" => self.ab_dir.clone(),
             _ => return None,
         })
     }
@@ -122,7 +113,7 @@ impl Config {
             "backoff_max" => {
                 let n = range_i32(&v, "退避上限", 1, 3600)?;
                 if n < self.backoff_min_sec {
-                    return Err(format!("退避上限不能小于下限（{} 秒）", self.backoff_min_sec));
+                    return Err("退避上限不能小于下限".into());
                 }
                 self.backoff_max_sec = n;
             }
@@ -130,13 +121,6 @@ impl Config {
             "refresh" => self.refresh_ms = range_i32(&v, "刷新周期", 200, 60_000)?,
             "log_kb" => self.log_max_kb = range_i32(&v, "日志上限", 64, 1_048_576)?,
             "debug" => self.log_debug = parse_bool(&v)?,
-            "tm_dir" | "ab_dir" => {
-                // 文本项要挡住换行：写下去就是往 INI 里注入行甚至整个 [section]
-                if v.contains('\r') || v.contains('\n') {
-                    return Err("不能包含换行".into());
-                }
-                if key == "tm_dir" { self.tm_dir = v; } else { self.ab_dir = v; }
-            }
             _ => return Err(format!("未知配置项：{}", key)),
         }
         Ok(())
@@ -174,13 +158,7 @@ impl Config {
              ; 单个日志文件超过这么多 KB 就轮转（磁盘上最多留 3 份，见 README）\r\n\
              max_kb={}\r\n\
              ; debug=1 连每条心率都写进日志（排查用；平时别开，心率几乎每秒都变，日志会涨很快）\r\n\
-             debug={}\r\n\
-             \r\n\
-             [integration]\r\n\
-             ; TrafficMonitor / MSI Afterburner 的安装目录，给 hr-manager 的
-             ; \x22打开插件目录\x22按钮用；留空则按常见安装位置自动探测\r\n\
-             tm_dir={}\r\n\
-             ab_dir={}\r\n",
+             debug={}\r\n",
             b01(self.demo),
             self.address,
             self.scan_timeout_ms,
@@ -189,9 +167,7 @@ impl Config {
             self.timeout_ms,
             self.refresh_ms,
             self.log_max_kb,
-            b01(self.log_debug),
-            self.tm_dir,
-            self.ab_dir
+            b01(self.log_debug)
         );
         s
     }
@@ -256,8 +232,6 @@ impl Config {
 
             log_max_kb: geti(&m, "log.max_kb", d.log_max_kb),
             log_debug: getb(&m, "log.debug", d.log_debug),
-            tm_dir: gets(&m, "integration.tm_dir", &d.tm_dir),
-            ab_dir: gets(&m, "integration.ab_dir", &d.ab_dir),
         }
     }
 
@@ -289,18 +263,18 @@ fn parse_bool(s: &str) -> Result<bool, String> {
     match s {
         "1" | "y" | "Y" | "yes" | "true" | "on" | "是" => Ok(true),
         "0" | "n" | "N" | "no" | "false" | "off" | "否" => Ok(false),
-        _ => Err(format!("要填 1/0（或 y/n），不能是「{}」", s)),
+        _ => Err(format!("要填 1/0 或 y/n，当前是 {}", s)),
     }
 }
 
 fn parse_i32(s: &str, what: &str) -> Result<i32, String> {
-    s.parse::<i32>().map_err(|_| format!("{} 得是整数，不能是「{}」", what, s))
+    s.parse::<i32>().map_err(|_| format!("{} 要是整数，当前是 {}", what, s))
 }
 
 fn range_i32(s: &str, what: &str, lo: i32, hi: i32) -> Result<i32, String> {
     let n = parse_i32(s, what)?;
     if n < lo || n > hi {
-        return Err(format!("{} 应在 {}~{} 之间（填的是 {}）", what, lo, hi, n));
+        return Err(format!("{} 应在 {} 到 {} 之间，当前 {}", what, lo, hi, n));
     }
     Ok(n)
 }
@@ -310,7 +284,7 @@ pub fn normalize_mac(s: &str) -> Result<String, String> {
     let hex: String = s.chars().filter(|c| c.is_ascii_hexdigit()).collect();
     if hex.len() != 12 {
         return Err(format!(
-            "MAC 地址要 12 位十六进制（形如 AA:BB:CC:DD:EE:FF），填的是「{}」",
+            "MAC 地址要 12 位十六进制，形如 AA:BB:CC:DD:EE:FF，当前是 {}",
             s
         ));
     }

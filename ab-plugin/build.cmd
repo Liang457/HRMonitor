@@ -113,6 +113,15 @@ if errorlevel 1 (
     exit /b 1
 )
 echo [OK] build\plugins\afterburner_hr_plugin.dll
+
+REM The sidecar .json carries the plugin metadata for the hr-manager panel
+REM (install steps + host directory setting); it travels next to the DLL.
+copy /y afterburner_hr_plugin.json "..\build\plugins\afterburner_hr_plugin.json" >nul
+if errorlevel 1 (
+    echo [ERROR] cannot copy to ..\build\plugins\afterburner_hr_plugin.json
+    exit /b 1
+)
+echo [OK] build\plugins\afterburner_hr_plugin.json
 echo.
 echo Manual deploy: copy the DLL into "MSI Afterburner\Plugins\Monitoring",
 echo restart Afterburner, then enable it in its Settings - Monitoring tab.

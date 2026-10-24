@@ -103,5 +103,14 @@ if errorlevel 1 (
 
 echo [build] OK: %~dp0trafficmonitor_hr_plugin.dll  - x64, export TMPluginGetInstance
 echo [build] OK: %~dp0..\build\plugins\trafficmonitor_hr_plugin.dll
+
+rem The sidecar .json carries the plugin metadata for the hr-manager panel
+rem (install steps + host directory setting); it travels next to the DLL.
+copy /y "trafficmonitor_hr_plugin.json" "..\build\plugins\trafficmonitor_hr_plugin.json" >nul
+if errorlevel 1 (
+    echo [build] ERROR: cannot copy to ..\build\plugins\trafficmonitor_hr_plugin.json
+    exit /b 1
+)
+echo [build] OK: %~dp0..\build\plugins\trafficmonitor_hr_plugin.json
 endlocal
 exit /b 0

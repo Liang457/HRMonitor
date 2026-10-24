@@ -1,0 +1,14 @@
+{
+  "name": "MSI Afterburner",
+  "dll": "afterburner_hr_plugin.dll",
+  "host_exe": "MSIAfterburner.exe",
+  "plugin_subdir": "Plugins\\Monitoring",
+  "steps": [
+    "退出 MSI Afterburner",
+    "把 afterburner_hr_plugin.dll 复制到 Plugins\\Monitoring 目录",
+    "启动 MSI Afterburner，在设置的监控页启用本插件",
+    "把心率加进 OSD 显示项"
+  ],
+  "note": "旧版插件文件 HeartRate.dll、hr_plugin.dll 还在插件目录时先删除，否则会显示两个心率项",
+  "dir": ""
+}

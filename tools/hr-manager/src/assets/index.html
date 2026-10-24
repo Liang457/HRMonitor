@@ -5,86 +5,210 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>BLE 心率</title>
 <style>
+  /* Material Design 3 dark scheme（Material Theme Builder 导出，css/dark.css 原样收录） */
   :root {
-    --bg: #12151c; --card: #1a1f2a; --card2: #202735; --line: #2b3446;
-    --text: #e8ecf3; --dim: #93a0b4; --accent: #eb405c; --accent2: #ff6b81;
-    --ok: #4cc38a; --warn: #e8b341; --bad: #e5534b;
+    --md-sys-color-primary: rgb(255 178 183);
+    --md-sys-color-surface-tint: rgb(255 178 183);
+    --md-sys-color-on-primary: rgb(86 29 36);
+    --md-sys-color-primary-container: rgb(114 51 57);
+    --md-sys-color-on-primary-container: rgb(255 218 219);
+    --md-sys-color-secondary: rgb(230 189 190);
+    --md-sys-color-on-secondary: rgb(68 41 43);
+    --md-sys-color-secondary-container: rgb(92 63 65);
+    --md-sys-color-on-secondary-container: rgb(255 218 219);
+    --md-sys-color-tertiary: rgb(231 192 142);
+    --md-sys-color-on-tertiary: rgb(67 44 6);
+    --md-sys-color-tertiary-container: rgb(92 66 26);
+    --md-sys-color-on-tertiary-container: rgb(255 221 179);
+    --md-sys-color-error: rgb(255 180 171);
+    --md-sys-color-on-error: rgb(105 0 5);
+    --md-sys-color-error-container: rgb(147 0 10);
+    --md-sys-color-on-error-container: rgb(255 218 214);
+    --md-sys-color-background: rgb(26 17 18);
+    --md-sys-color-on-background: rgb(240 222 222);
+    --md-sys-color-surface: rgb(26 17 18);
+    --md-sys-color-on-surface: rgb(240 222 222);
+    --md-sys-color-surface-variant: rgb(82 67 68);
+    --md-sys-color-on-surface-variant: rgb(215 193 194);
+    --md-sys-color-outline: rgb(159 140 141);
+    --md-sys-color-outline-variant: rgb(82 67 68);
+    --md-sys-color-shadow: rgb(0 0 0);
+    --md-sys-color-scrim: rgb(0 0 0);
+    --md-sys-color-inverse-surface: rgb(240 222 222);
+    --md-sys-color-inverse-on-surface: rgb(56 46 46);
+    --md-sys-color-inverse-primary: rgb(143 74 79);
+    --md-sys-color-surface-dim: rgb(26 17 18);
+    --md-sys-color-surface-bright: rgb(65 55 55);
+    --md-sys-color-surface-container-lowest: rgb(20 12 12);
+    --md-sys-color-surface-container-low: rgb(34 25 26);
+    --md-sys-color-surface-container: rgb(39 29 30);
+    --md-sys-color-surface-container-high: rgb(50 40 40);
+    --md-sys-color-surface-container-highest: rgb(61 50 50);
+    /* 面板自用语义色（MD3 无 success 角色，按暖色底手配） */
+    --ok: rgb(126 204 154);
+    --warn: rgb(231 192 142);
+    /* MD3 海拔 */
+    --elev-1: 0 1px 2px rgb(0 0 0 / .3), 0 1px 3px 1px rgb(0 0 0 / .15);
+    --elev-2: 0 1px 2px rgb(0 0 0 / .3), 0 2px 6px 2px rgb(0 0 0 / .15);
+    --elev-3: 0 1px 3px rgb(0 0 0 / .3), 0 4px 8px 3px rgb(0 0 0 / .15);
+    color-scheme: dark;
   }
   * { box-sizing: border-box; }
   body {
-    margin: 0; background: var(--bg); color: var(--text);
-    font: 14px/1.6 "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
-    padding: 14px 14px 30px;
+    margin: 0; background: var(--md-sys-color-background); color: var(--md-sys-color-on-background);
+    font: 14px/1.55 "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+    padding: 16px 16px 32px;
   }
+  ::-webkit-scrollbar { width: 10px; }
+  ::-webkit-scrollbar-thumb { background: var(--md-sys-color-surface-container-highest); border-radius: 5px; }
+  ::-webkit-scrollbar-thumb:hover { background: var(--md-sys-color-outline-variant); }
+  input[type=number]::-webkit-inner-spin-button, input[type=number]::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
+  :focus-visible { outline: 2px solid var(--md-sys-color-primary); outline-offset: 2px; }
+
   .wrap { max-width: 560px; margin: 0 auto; }
-  header { display: flex; align-items: center; gap: 10px; margin: 4px 2px 14px; }
-  header .heart { width: 22px; height: 22px; fill: var(--accent); }
-  header h1 { font-size: 17px; margin: 0; font-weight: 600; flex: 1; }
-  .badge { font-size: 12px; padding: 2px 10px; border-radius: 20px; border: 1px solid var(--line); color: var(--dim); }
-  .badge.on { color: var(--ok); border-color: var(--ok); }
 
-  .card { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; margin-bottom: 14px; }
-  .card h2 { margin: 0 0 10px; font-size: 13px; color: var(--dim); font-weight: 600; letter-spacing: .05em; }
-
-  /* 状态卡 */
-  .hrbox { display: flex; align-items: baseline; gap: 10px; }
-  .bpm { font-size: 56px; font-weight: 700; font-variant-numeric: tabular-nums; line-height: 1.1; }
-  .bpm small { font-size: 15px; color: var(--dim); font-weight: 400; margin-left: 4px; }
-  .bpm.live { color: var(--accent2); }
-  .stext { color: var(--dim); font-size: 13px; }
-  .stext b { color: var(--text); font-weight: 600; }
-
-  /* 按钮 */
-  button {
-    background: var(--card2); color: var(--text); border: 1px solid var(--line);
-    border-radius: 8px; padding: 6px 14px; font-size: 13px; cursor: pointer;
+  header { display: flex; align-items: center; gap: 12px; margin: 4px 4px 16px; }
+  header .heart { width: 26px; height: 26px; fill: var(--md-sys-color-primary); flex: none; }
+  header h1 { font-size: 22px; margin: 0; font-weight: 600; letter-spacing: 0; flex: 1; }
+  .chip {
+    font-size: 12.5px; font-weight: 500; height: 30px; padding: 0 14px;
+    display: inline-flex; align-items: center; border-radius: 8px;
+    border: 1px solid var(--md-sys-color-outline-variant); color: var(--md-sys-color-on-surface-variant);
+    white-space: nowrap; background: var(--md-sys-color-surface-container-low);
   }
-  button:hover { border-color: var(--accent); }
-  button:disabled { opacity: .45; cursor: default; }
-  button.primary { background: var(--accent); border-color: var(--accent); }
-  button.primary:hover { background: var(--accent2); }
-  button.danger { color: var(--bad); border-color: var(--bad); }
+  .chip.on { color: var(--ok); border-color: rgb(126 204 154 / .45); background: transparent; }
+  .chip.warn { color: var(--warn); border-color: rgb(231 192 142 / .45); background: transparent; }
+
+  /* MD3 elevated card：container-low 底 + 海拔 1 */
+  .card {
+    background: var(--md-sys-color-surface-container-low); border-radius: 12px;
+    padding: 16px; margin-bottom: 14px; box-shadow: var(--elev-1);
+  }
+  .card h2 { margin: 0 0 12px; font-size: 15px; color: var(--md-sys-color-on-surface); font-weight: 600; line-height: 1.4; }
+  .card h2 .link { float: right; margin-top: 1px; }
+
+  /* 状态卡：大数字在上，状态行在下 */
+  .bpm {
+    font-size: 58px; font-weight: 600; font-variant-numeric: tabular-nums;
+    line-height: 1.05; letter-spacing: -.5px; color: var(--md-sys-color-on-surface-variant);
+  }
+  .bpm.live { color: var(--md-sys-color-primary); }
+  .bpm small { font-size: 16px; font-weight: 500; margin-left: 6px; letter-spacing: 0; }
+  .stext { color: var(--md-sys-color-on-surface-variant); font-size: 13px; margin-top: 4px; }
+  .stext b { color: var(--md-sys-color-on-surface); font-weight: 600; }
+
+  /* MD3 按钮：40 高、pill、label-large、hover 状态层叠 on-* 色 8% */
+  button {
+    appearance: none; border: none; font-family: inherit;
+    background: var(--md-sys-color-secondary-container); color: var(--md-sys-color-on-secondary-container);
+    border-radius: 20px; height: 40px; padding: 0 24px;
+    font-size: 14px; font-weight: 600; cursor: pointer; white-space: nowrap;
+    transition: box-shadow .12s;
+  }
+  button.text { background: transparent; color: var(--md-sys-color-primary); padding: 0 12px; }
+  button.danger { background: transparent; border: 1px solid var(--md-sys-color-outline); color: var(--md-sys-color-error); }
+  button.primary { background: var(--md-sys-color-primary); color: var(--md-sys-color-on-primary); }
+  button.text:hover { background-image: linear-gradient(rgb(255 178 183 / .08), rgb(255 178 183 / .08)); }
+  button.danger:hover { background-image: linear-gradient(rgb(255 180 171 / .08), rgb(255 180 171 / .08)); }
+  button:hover { box-shadow: var(--elev-1); background-image: linear-gradient(rgb(255 218 219 / .08), rgb(255 218 219 / .08)); }
+  button.primary:hover { background-image: linear-gradient(rgb(86 29 36 / .08), rgb(86 29 36 / .08)); }
+  button:active { box-shadow: none; background-image: linear-gradient(rgb(255 218 219 / .1), rgb(255 218 219 / .1)); }
+  button.primary:active { background-image: linear-gradient(rgb(86 29 36 / .1), rgb(86 29 36 / .1)); }
+  button:disabled { opacity: .38; cursor: default; box-shadow: none; background-image: none; }
   .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
 
-  /* 配置表单 */
-  .fields { display: grid; grid-template-columns: 1fr; gap: 9px; }
-  .f { display: grid; grid-template-columns: 150px 1fr; gap: 10px; align-items: center; }
-  .f label { color: var(--dim); font-size: 13px; }
-  .f label i { font-style: normal; display: block; color: #5b6b82; font-size: 11px; }
-  .f input[type=text], .f input[type=number] {
-    background: var(--bg); border: 1px solid var(--line); color: var(--text);
-    border-radius: 7px; padding: 6px 9px; font-size: 13px; width: 100%;
+  /* MD3 filled text field：底部线、浮层标签、focus 双向动画 */
+  .f { margin-bottom: 12px; }
+  .f.bool { display: flex; justify-content: space-between; align-items: center; gap: 16px; margin-bottom: 14px; }
+  .f.bool .fl { flex: 1; }
+  .fl .t { font-size: 14px; color: var(--md-sys-color-on-surface); }
+  .fl .s { font-size: 12px; color: var(--md-sys-color-on-surface-variant); margin-top: 1px; }
+  .fsub { font-size: 12px; color: var(--md-sys-color-on-surface-variant); margin-top: 4px; padding: 0 4px; }
+  .tf { position: relative; }
+  .tf input {
+    width: 100%; font-family: inherit; font-size: 14px; color: var(--md-sys-color-on-surface);
+    background: var(--md-sys-color-surface-container-highest);
+    border: none; border-bottom: 1px solid var(--md-sys-color-outline);
+    border-radius: 4px 4px 0 0; padding: 22px 14px 6px; caret-color: var(--md-sys-color-primary);
   }
-  .f input:focus { outline: none; border-color: var(--accent); }
-  .switch { position: relative; width: 40px; height: 22px; flex: none; }
-  .switch input { opacity: 0; width: 0; height: 0; }
-  .switch span { position: absolute; inset: 0; background: var(--line); border-radius: 22px; transition: .15s; cursor: pointer; }
-  .switch span::before { content: ""; position: absolute; width: 16px; height: 16px; left: 3px; top: 3px; border-radius: 50%; background: var(--dim); transition: .15s; }
-  .switch input:checked + span { background: var(--accent); }
-  .switch input:checked + span::before { transform: translateX(18px); background: #fff; }
-  .err { color: var(--bad); font-size: 12px; }
-  .link { color: var(--accent2); cursor: pointer; text-decoration: underline; font-size: 12px; }
+  .tf input:hover { border-bottom-color: var(--md-sys-color-on-surface); }
+  .tf input:focus { outline: none; box-shadow: inset 0 -2px 0 var(--md-sys-color-primary); border-bottom-color: transparent; background-image: linear-gradient(rgb(255 178 183 / .05), rgb(255 178 183 / .05)); }
+  .tf label {
+    position: absolute; left: 14px; top: 16px; font-size: 14px; color: var(--md-sys-color-on-surface-variant);
+    pointer-events: none; transition: .13s ease; max-width: calc(100% - 28px);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .tf input:focus + label { color: var(--md-sys-color-primary); }
+  .tf input:focus + label, .tf input:not(:placeholder-shown) + label { top: 6px; font-size: 11px; }
+
+  /* MD3 switch：52x32 轨道；未选 track highest+outline 边、thumb outline；选中 track primary、thumb on-primary */
+  .switch { position: relative; width: 52px; height: 32px; flex: none; cursor: pointer; }
+  .switch input { opacity: 0; width: 0; height: 0; position: absolute; }
+  .switch span {
+    position: absolute; inset: 0; border-radius: 16px;
+    background: var(--md-sys-color-surface-container-highest); border: 2px solid var(--md-sys-color-outline);
+    transition: .15s;
+  }
+  .switch span::before {
+    content: ""; position: absolute; width: 16px; height: 16px; left: 6px; top: 6px; border-radius: 50%;
+    background: var(--md-sys-color-outline); transition: .15s ease;
+  }
+  .switch:hover span::before { background: var(--md-sys-color-on-surface-variant); }
+  .switch input:checked + span { background: var(--md-sys-color-primary); border-color: var(--md-sys-color-primary); }
+  .switch input:checked + span::before { transform: translateX(12px); width: 24px; height: 24px; left: 4px; top: 2px; background: var(--md-sys-color-on-primary); }
+  .switch input:focus-visible + span { outline: 2px solid var(--md-sys-color-primary); outline-offset: 2px; }
+
+  .err { color: var(--md-sys-color-error); font-size: 12px; }
+  .link { color: var(--md-sys-color-primary); cursor: pointer; font-size: 13px; font-weight: 600; border-radius: 4px; padding: 2px 4px; }
+  .link:hover { background-image: linear-gradient(rgb(255 178 183 / .08), rgb(255 178 183 / .08)); }
 
   /* 扫描 */
-  .hint { color: var(--dim); font-size: 12px; margin: 6px 0 10px; }
-  .slist { margin-top: 10px; display: flex; flex-direction: column; gap: 6px; }
-  .dev { display: flex; gap: 10px; align-items: center; background: var(--card2); border: 1px solid var(--line); border-radius: 8px; padding: 7px 11px; cursor: pointer; }
-  .dev:hover { border-color: var(--accent); }
+  .hint { color: var(--md-sys-color-on-surface-variant); font-size: 12.5px; margin: 0 0 12px; }
+  .hint b { color: var(--md-sys-color-on-surface); font-weight: 600; }
+  .slist { margin-top: 12px; display: flex; flex-direction: column; gap: 6px; }
+  .dev {
+    display: flex; gap: 10px; align-items: center; cursor: pointer;
+    background: var(--md-sys-color-surface-container-high); border-radius: 24px; padding: 11px 18px;
+  }
+  .dev:hover { background-image: linear-gradient(rgb(255 218 219 / .06), rgb(255 218 219 / .06)); }
   .dev .mac { font-family: Consolas, monospace; font-size: 12.5px; }
-  .dev .nm { color: var(--dim); font-size: 12.5px; flex: 1; }
-  .dev.cur { border-color: var(--ok); }
-  .dev.cur .tag { color: var(--ok); font-size: 11px; }
-  .sstatus { color: var(--warn); font-size: 12.5px; min-height: 18px; margin-top: 8px; }
+  .dev .nm { color: var(--md-sys-color-on-surface-variant); font-size: 12.5px; flex: 1; }
+  .dev.cur { background: var(--md-sys-color-primary-container); }
+  .dev.cur .mac, .dev.cur .nm, .dev.cur .tag { color: var(--md-sys-color-on-primary-container); }
+  .dev.cur .mac { font-weight: 600; }
+  .dev.cur .tag { font-size: 11px; }
+  .sstatus { color: var(--warn); font-size: 12.5px; min-height: 18px; margin-top: 10px; }
+  .progress { height: 4px; border-radius: 2px; background: var(--md-sys-color-surface-container-highest); margin-top: 12px; position: relative; overflow: hidden; display: none; }
+  .progress.on { display: block; }
+  .progress::before { content: ""; position: absolute; top: 0; bottom: 0; width: 40%; border-radius: 2px; background: var(--md-sys-color-primary); animation: pslide 1.2s ease-in-out infinite; }
+  @keyframes pslide { from { left: -40%; } to { left: 100%; } }
 
-  /* 高级 */
-  .banner { background: #3a2b18; border: 1px solid #6b5320; color: #ffd58a; border-radius: 8px; padding: 8px 12px; font-size: 12.5px; margin-bottom: 10px; }
-  .chk { display: flex; align-items: center; gap: 8px; font-size: 13px; }
-  .chk input { accent-color: var(--accent); width: 15px; height: 15px; }
-  footer { color: #56657e; font-size: 11px; text-align: center; margin-top: 6px; }
+  /* 提示横幅：tertiary container 当警示容器用 */
+  .banner {
+    background: var(--md-sys-color-tertiary-container); color: var(--md-sys-color-on-tertiary-container);
+    border-radius: 12px; padding: 12px 16px; font-size: 12.5px; margin-bottom: 14px;
+  }
+  .banner b { font-weight: 600; }
+  footer { color: var(--md-sys-color-outline); font-size: 11px; text-align: center; margin-top: 8px; word-break: break-all; line-height: 1.7; }
 
-  /* toast */
+  /* 第三方接入：每宿主一块 container 底圆角块 */
+  .integ { background: var(--md-sys-color-surface-container); border-radius: 12px; padding: 16px; margin-top: 12px; }
+  .integ:first-child { margin-top: 14px; }
+  .integ-head { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+  .integ-name { font-size: 15px; font-weight: 600; flex: 1; }
+  .steps { margin: 0; padding-left: 20px; color: var(--md-sys-color-on-surface-variant); font-size: 12.5px; }
+  .steps li { margin: 3px 0; padding-left: 2px; }
+  .steps li::marker { color: var(--md-sys-color-primary); font-weight: 600; }
+  .integ .tf { margin-top: 14px; }
+  .integ .row { margin-top: 12px; }
+  .integ .note { color: var(--md-sys-color-outline); font-size: 11.5px; margin: 12px 0 0; padding-top: 10px; border-top: 1px solid var(--md-sys-color-outline-variant); }
+
+  /* MD3 snackbar：inverse surface，海拔 3 */
   #toasts { position: fixed; top: 14px; left: 50%; transform: translateX(-50%); display: flex; flex-direction: column; gap: 8px; z-index: 9; width: min(520px, 92%); }
-  .toast { background: var(--card2); border: 1px solid var(--accent); border-radius: 8px; padding: 8px 14px; font-size: 13px; box-shadow: 0 6px 18px rgba(0,0,0,.4); }
+  .toast {
+    background: var(--md-sys-color-inverse-surface); color: var(--md-sys-color-inverse-on-surface);
+    border-radius: 4px; padding: 12px 16px; font-size: 13.5px; box-shadow: var(--elev-3);
+  }
 </style>
 </head>
 <body>
@@ -92,39 +216,37 @@
   <header>
     <svg class="heart" viewBox="0 0 32 32"><path d="M16 29C9 23 2 17.5 2 10.8 2 6 5.6 3 9.6 3c2.6 0 5 1.3 6.4 3.6C17.4 4.3 19.8 3 22.4 3 26.4 3 30 6 30 10.8c0 6.7-7 12.2-14 18.2z"/></svg>
     <h1>BLE 心率</h1>
-    <span class="badge" id="daemonBadge">daemon 检测中…</span>
+    <span class="chip" id="daemonBadge">检测 daemon…</span>
   </header>
 
   <!-- 实时状态 -->
   <div class="card">
-    <div class="hrbox">
-      <div class="bpm" id="bpm">--</div>
-      <div class="stext" id="stext">正在连接管理器…</div>
-    </div>
+    <div class="bpm" id="bpm">--</div>
+    <div class="stext" id="stext">正在连接管理器…</div>
   </div>
 
   <!-- 选表扫描 -->
   <div class="card" id="scanCard">
     <h2>选择手表</h2>
     <div class="hint">
-      手表需停在<b>“心率广播”</b>页面并保持亮屏。若 daemon 正连着手表，扫描会<b>先自动停掉它</b>，
-      扫完选定后自动恢复。
+      手表打开<b>心率广播</b>页面并保持亮屏。扫描会先停止 daemon，选定手表后自动恢复。
     </div>
     <div class="row">
-      <button class="primary" id="btnScan">开始扫描（10 秒）</button>
+      <button class="primary" id="btnScan">扫描 10 秒</button>
       <button id="btnScanCancel" hidden>取消</button>
-      <button id="btnScanDiscard" hidden>放弃选择，恢复采集</button>
+      <button id="btnScanDiscard" hidden>放弃选择</button>
     </div>
+    <div class="progress" id="scanProgress"></div>
     <div class="sstatus" id="scanStatus"></div>
     <div class="slist" id="scanList"></div>
   </div>
 
   <!-- 配置 -->
   <div class="card">
-    <h2>配置 <span class="link" id="lnkScanForAddr" style="float:right">选表改 address</span></h2>
-    <div class="fields" id="fields"></div>
-    <div class="err" id="formErr" style="margin-top:8px"></div>
-    <div class="row" style="margin-top:12px">
+    <h2>配置 <span class="link" id="lnkScanForAddr">扫描选表</span></h2>
+    <div id="fields"></div>
+    <div class="err" id="formErr" style="margin-top:4px"></div>
+    <div class="row" style="margin-top:14px">
       <button id="btnSave">保存</button>
       <button class="primary" id="btnSaveRestart">保存并重启 daemon</button>
       <button class="danger" id="btnReset">恢复默认</button>
@@ -133,7 +255,7 @@
 
   <!-- daemon 控制 -->
   <div class="card">
-    <h2>采集进程（hr-daemon）</h2>
+    <h2>hr-daemon</h2>
     <div class="row">
       <button id="btnStart">启动</button>
       <button id="btnStop">停止</button>
@@ -142,32 +264,29 @@
     </div>
   </div>
 
+  <!-- 第三方程序接入 -->
+  <div class="card">
+    <h2>第三方程序接入</h2>
+    <div class="hint">插件在本程序的 plugins 目录，复制 DLL 到宿主的插件目录后重启宿主。</div>
+    <div class="row" style="margin:0">
+      <button class="text" id="btnOpenPlugins">打开 plugins 目录</button>
+    </div>
+    <div id="integrations"></div>
+  </div>
+
   <!-- 高级 -->
   <div class="card">
     <h2>高级</h2>
     <div class="banner" id="oldTaskBanner" hidden>
-      检测到旧版计划任务 HuaweiHRDaemon（会开机直接拉起 daemon）。建议运行
-      <b>scripts\uninstall-task.ps1</b> 清掉，改用本面板的“开机自启”。
+      检测到旧版计划任务 HuaweiHRDaemon，开机时会直接启动 daemon。
+      运行 <b>scripts\uninstall-task.ps1</b> 删除它，改用开机自启。
     </div>
-    <div class="chk" style="margin-bottom:12px">
+    <div class="f bool" style="margin-bottom:0">
+      <div class="fl">
+        <div class="t">开机自启</div>
+        <div class="s">登录后只在托盘运行，不弹面板</div>
+      </div>
       <label class="switch"><input type="checkbox" id="chkAutostart"><span></span></label>
-      开机自启（登录后只出托盘，不弹面板）
-    </div>
-    <h2 style="margin-top:4px">第三方程序接入（手动复制 DLL）</h2>
-    <div class="hint" style="margin:6px 0 0">
-      插件 DLL 就在本程序的 <b>plugins\</b> 文件夹里，复制到对应宿主的插件目录、重启宿主即可：
-    </div>
-    <div class="hint" style="margin:2px 0 0">
-      · TrafficMonitor → 复制 <b>trafficmonitor_hr_plugin.dll</b> 到 <b>plugins\</b>，
-      重启后在 设置→插件 里把“心率”加进显示项<br>
-      · MSI Afterburner → 复制 <b>afterburner_hr_plugin.dll</b> 到 <b>Plugins\Monitoring\</b>，
-      重启后在 设置→监控 里启用插件，再把“心率”加进 OSD 显示项<br>
-      · 装过旧名 DLL（HeartRate.dll / hr_plugin.dll）的先删掉旧文件，否则会出现重复的“心率”项
-    </div>
-    <div class="row" style="margin-top:10px">
-      <button id="btnOpenPlugins">打开插件文件夹</button>
-      <button id="btnOpenTm">打开 TrafficMonitor 插件目录</button>
-      <button id="btnOpenAb">打开 Afterburner 插件目录</button>
     </div>
   </div>
 
@@ -216,9 +335,9 @@ function showToast(msg) {
 // ---------------------------------------------------------------- 状态卡
 const STATUS_TEXT = {
   ok: "采集中",
-  connecting: "连接中 / 重连退避",
+  connecting: "连接中或等待重连",
   timeout: "数据超时",
-  nodata: "无数据（未配置手表或还没连上）",
+  nodata: "无数据，未配置手表或未连接",
   off: "hr-daemon 未运行"
 };
 function renderStatus(s) {
@@ -232,7 +351,7 @@ function renderStatus(s) {
   }
   let txt = STATUS_TEXT[s.status] || s.status;
   if (s.device) txt = "<b>" + esc(s.device) + "</b> · " + txt;
-  if (s.ageSec > 3 && s.bpm >= 0) txt += "（" + s.ageSec + " 秒前更新）";
+  if (s.ageSec > 3 && s.bpm >= 0) txt += " · " + s.ageSec + " 秒前更新";
   $("stext").innerHTML = txt;
   const badge = $("daemonBadge");
   if (s.daemon) { badge.textContent = "daemon 运行中"; badge.classList.add("on"); }
@@ -243,16 +362,18 @@ function renderStatus(s) {
 
 // ---------------------------------------------------------------- 扫描
 let scanning = false;
+function setScanProgress(on) { $("scanProgress").classList.toggle("on", on); }
 function renderScanEvent(e) {
   const st = $("scanStatus");
-  if (e.type === "stopping") { st.textContent = "正在停止 hr-daemon（手表连着时不广播）…"; }
-  else if (e.type === "waiting") { st.textContent = "已停止，等 2 秒让手表恢复广播…"; }
-  else if (e.type === "device") { upsertDevice(e.mac, e.name); st.textContent = "扫描中…（已发现 " + deviceCount() + " 台）"; }
+  if (e.type === "stopping") { st.textContent = "正在停止 hr-daemon…"; }
+  else if (e.type === "waiting") { st.textContent = "等待手表恢复广播…"; }
+  else if (e.type === "device") { upsertDevice(e.mac, e.name); st.textContent = "扫描中，已发现 " + deviceCount() + " 台"; }
   else if (e.type === "done") {
     scanning = false;
+    setScanProgress(false);
     $("btnScan").disabled = false;
     $("btnScanCancel").hidden = true;
-    st.textContent = "扫描完成，共 " + e.count + " 台。点一台选定；不想选就点“放弃选择”。";
+    st.textContent = "扫描完成，共 " + e.count + " 台。点一台选定，或点放弃选择。";
     $("btnScanDiscard").hidden = false;
   }
 }
@@ -272,19 +393,20 @@ function upsertDevice(mac, name) {
     list.appendChild(row);
   }
   row.children[0].textContent = mac;
-  row.children[1].textContent = name || "（无名字）";
-  if (row.dataset.mac === currentAddress) row.children[2].textContent = "← 当前";
+  row.children[1].textContent = name || "未命名";
+  if (row.dataset.mac === currentAddress) row.children[2].textContent = "当前";
 }
 function resetScanUi() {
   $("scanList").innerHTML = "";
   $("scanStatus").textContent = "";
+  $("scanProgress").classList.remove("on");
   $("btnScanDiscard").hidden = true;
   $("btnScanCancel").hidden = true;
   $("btnScan").disabled = false;
   scanning = false;
 }
 function pickDevice(mac) {
-  if (!confirm("把手表设为 " + mac + "？\n会保存配置并重启 hr-daemon。")) return;
+  if (!confirm("把手表设为 " + mac + "？\n将保存地址并重启 hr-daemon。")) return;
   $("btnScan").disabled = true;
   __hr.call("apply_address", { mac: mac }).then(function (r) {
     resetScanUi();
@@ -297,17 +419,15 @@ function pickDevice(mac) {
 
 // ---------------------------------------------------------------- 配置表单
 const FIELDS = [
-  { key: "demo",         kind: "bool",  desc: "模拟心率源",              sub: "不用手表，60~180 随机游走" },
-  { key: "address",      kind: "text",  desc: "手表 MAC",                sub: "留空 = 不连接" },
-  { key: "scan_timeout", kind: "number",desc: "每轮扫描最长",            sub: "毫秒，--scan 默认时长" },
-  { key: "backoff_min",  kind: "number",desc: "重连退避下限",            sub: "秒" },
-  { key: "backoff_max",  kind: "number",desc: "重连退避上限",            sub: "秒，≥ 下限" },
-  { key: "timeout",      kind: "number",desc: "多久没数据显示 --",       sub: "毫秒" },
-  { key: "refresh",      kind: "number",desc: "刷新/采样周期",           sub: "毫秒" },
-  { key: "log_kb",       kind: "number",desc: "日志文件上限",            sub: "KB，写满轮转" },
-  { key: "debug",        kind: "bool",  desc: "日志打印每条心率",        sub: "排查用，平时别开" },
-  { key: "tm_dir",       kind: "text",  desc: "TrafficMonitor 目录",     sub: "“打开插件目录”用，留空自动探测" },
-  { key: "ab_dir",       kind: "text",  desc: "Afterburner 目录",        sub: "“打开插件目录”用，留空自动探测" }
+  { key: "demo",         kind: "bool",   desc: "模拟心率源",     sub: "不用手表，心率在 60 到 180 间随机变化" },
+  { key: "address",      kind: "text",   desc: "手表 MAC",       sub: "留空则不连接" },
+  { key: "scan_timeout", kind: "number", desc: "扫描超时",       sub: "毫秒" },
+  { key: "backoff_min",  kind: "number", desc: "重连退避下限",   sub: "秒" },
+  { key: "backoff_max",  kind: "number", desc: "重连退避上限",   sub: "秒，不小于下限" },
+  { key: "timeout",      kind: "number", desc: "数据超时",       sub: "毫秒，超时后显示 --" },
+  { key: "refresh",      kind: "number", desc: "刷新周期",       sub: "毫秒" },
+  { key: "log_kb",       kind: "number", desc: "日志文件上限",   sub: "KB" },
+  { key: "debug",        kind: "bool",   desc: "日志打印每条心率", sub: "仅排查时开启" }
 ];
 let currentAddress = "";
 
@@ -315,15 +435,18 @@ function buildForm() {
   const box = $("fields");
   for (const f of FIELDS) {
     const row = document.createElement("div");
-    row.className = "f";
     if (f.kind === "bool") {
+      row.className = "f bool";
       row.innerHTML =
-        '<label>' + f.desc + '<i>' + f.sub + '</i></label>' +
+        '<div class="fl"><div class="t">' + f.desc + '</div><div class="s">' + f.sub + '</div></div>' +
         '<label class="switch"><input type="checkbox" data-key="' + f.key + '"><span></span></label>';
     } else {
+      // MD3 filled text field：placeholder 留空格驱动浮层标签
+      row.className = "f";
       row.innerHTML =
-        '<label>' + f.desc + '<i>' + f.sub + '</i></label>' +
-        '<input type="' + f.kind + '" data-key="' + f.key + '">';
+        '<div class="tf"><input type="' + f.kind + '" data-key="' + f.key + '" placeholder=" ">' +
+        '<label>' + f.desc + '</label></div>' +
+        '<div class="fsub">' + f.sub + '</div>';
     }
     box.appendChild(row);
   }
@@ -337,13 +460,12 @@ function fillForm(cfg) {
   }
   // 当前列表里标"当前"
   for (const d of $("scanList").children) {
-    d.children[2].textContent = d.dataset.mac === currentAddress ? "← 当前" : "";
+    d.children[2].textContent = d.dataset.mac === currentAddress ? "当前" : "";
     d.classList.toggle("cur", d.dataset.mac === currentAddress);
   }
 }
 function collectForm() {
   const values = {};
-  const errs = [];
   for (const el of $("fields").querySelectorAll("[data-key]")) {
     const v = el.type === "checkbox" ? (el.checked ? "1" : "0") : el.value;
     values[el.dataset.key] = v;
@@ -355,9 +477,9 @@ function saveForm() {
   return __hr.call("set_config", { values: collectForm() }).then(function (r) {
     if (!r.ok) {
       $("formErr").textContent = r.error || "保存失败";
-      toast("配置没保存：" + (r.error || "有非法值"));
+      toast("保存失败：" + (r.error || "存在无效值"));
     } else {
-      toast("配置已保存");
+      toast("已保存");
     }
     return r.ok;
   });
@@ -370,8 +492,63 @@ function refreshMeta() {
     fillForm(r.config);
     $("chkAutostart").checked = !!r.autostart;
     $("oldTaskBanner").hidden = !r.oldTask;
-    $("paths").textContent = "hr-manager v" + r.version + " · 配置：" + r.iniPath + (r.iniExists ? "" : "（不存在，用默认值）") + " · daemon：" + r.daemonExe;
+    $("paths").textContent =
+      "hr-manager v" + r.version +
+      " · 配置 " + r.iniPath + (r.iniExists ? "" : "，使用默认值") +
+      " · daemon " + r.daemonExe;
   });
+}
+
+// ---------------------------------------------------------------- 第三方接入
+function renderIntegrations(r) {
+  const box = $("integrations");
+  box.innerHTML = "";
+  if (!r.ok) { box.innerHTML = '<div class="integ"><div class="err">' + esc(r.error || "读取失败") + '</div></div>'; return; }
+  for (const it of r.items) {
+    const div = document.createElement("div");
+    div.className = "integ";
+    if (it.error) {   // 解析失败的 json：只报错，不给操作
+      div.innerHTML =
+        '<div class="integ-head"><div class="integ-name">' + esc(it.file) + '</div></div>' +
+        '<div class="err" style="margin-top:8px">解析失败：' + esc(it.error) + '</div>';
+      box.appendChild(div);
+      continue;
+    }
+    const steps = (it.steps || []).map(function (s) { return "<li>" + esc(s) + "</li>"; }).join("");
+    div.innerHTML =
+      '<div class="integ-head"><div class="integ-name">' + esc(it.name) + '</div>' +
+      '<span class="chip ' + (it.dllPresent ? "on" : "warn") + '">' + (it.dllPresent ? "DLL 就绪" : "DLL 缺失") + '</span></div>' +
+      (steps ? '<ol class="steps">' + steps + '</ol>' : "") +
+      '<div class="tf"><input type="text" data-file="' + esc(it.file) + '" placeholder=" " value="' + esc(it.dir || "") + '">' +
+        '<label>' + esc(it.name) + ' 目录</label></div>' +
+      '<div class="fsub">留空自动探测</div>' +
+      '<div class="row"><button data-open="' + esc(it.file) + '">打开 ' + esc(it.name) + ' 插件目录</button></div>' +
+      (it.note ? '<div class="note">' + esc(it.note) + '</div>' : "");
+    box.appendChild(div);
+  }
+  // 目录输入：失焦或回车时保存
+  for (const el of box.querySelectorAll("input[data-file]")) {
+    const save = function () {
+      if (el.dataset.saved === el.value) return;
+      __hr.call("set_integration_dir", { file: el.dataset.file, dir: el.value }).then(function (r2) {
+        if (r2.ok) { el.dataset.saved = el.value; toast("已保存"); }
+        else toast("保存失败：" + (r2.error || ""));
+      });
+    };
+    el.dataset.saved = el.value;
+    el.onchange = save;
+    el.onkeydown = function (ev) { if (ev.key === "Enter") el.blur(); };
+  }
+  for (const b of box.querySelectorAll("button[data-open]")) {
+    b.onclick = function () {
+      __hr.call("open_folder", { file: b.dataset.open }).then(function (r2) {
+        if (!r2.ok) toast(r2.error || "打开失败");
+      });
+    };
+  }
+}
+function loadIntegrations() {
+  __hr.call("get_integrations").then(renderIntegrations);
 }
 
 // ---------------------------------------------------------------- 事件绑定
@@ -382,12 +559,14 @@ function bind() {
     scanning = true;
     $("btnScan").disabled = true;
     $("btnScanCancel").hidden = false;
+    setScanProgress(true);
     $("scanStatus").textContent = "准备扫描…";
     __hr.call("scan_start", { secs: 10 }).then(function (r) {
+      setScanProgress(false);
       if (!r.ok) {
         resetScanUi();
         $("scanStatus").textContent = "";
-        toast("扫描没跑起来：" + (r.error || ""));
+        toast("扫描启动失败：" + (r.error || ""));
       } else if (r.cancelled) {
         $("scanStatus").textContent = "已取消，采集已恢复。";
       }
@@ -401,7 +580,7 @@ function bind() {
   $("btnScanDiscard").onclick = function () {
     __hr.call("scan_discard").then(function () {
       resetScanUi();
-      $("scanStatus").textContent = "已放弃，采集恢复。";
+      $("scanStatus").textContent = "已放弃，采集已恢复。";
     });
   };
 
@@ -414,9 +593,9 @@ function bind() {
     });
   };
   $("btnReset").onclick = function () {
-    if (!confirm("用默认值覆盖整个 hr-daemon.ini？")) return;
+    if (!confirm("恢复默认配置并覆盖 hr-daemon.ini？")) return;
     __hr.call("reset_config").then(function (r) {
-      if (r.ok) { toast("已恢复默认配置（重启 daemon 后生效）"); refreshMeta(); }
+      if (r.ok) { toast("已恢复默认配置，重启 daemon 后生效"); refreshMeta(); }
       else toast("失败：" + r.error);
     });
   };
@@ -432,16 +611,11 @@ function bind() {
     });
   };
 
-  const openFolder = function (btnId, which) {
-    $(btnId).onclick = function () {
-      __hr.call("open_folder", { which: which }).then(function (r) {
-        if (!r.ok) toast(r.error || "打开失败");
-      });
-    };
+  $("btnOpenPlugins").onclick = function () {
+    __hr.call("open_folder", { which: "plugins" }).then(function (r) {
+      if (!r.ok) toast(r.error || "打开失败");
+    });
   };
-  openFolder("btnOpenPlugins", "plugins");
-  openFolder("btnOpenTm", "tm");
-  openFolder("btnOpenAb", "ab");
 
   $("lnkScanForAddr").onclick = function () {
     $("scanCard").scrollIntoView({ behavior: "smooth" });
@@ -452,6 +626,7 @@ function bind() {
 buildForm();
 bind();
 refreshMeta();
+loadIntegrations();
 </script>
 </body>
 </html>

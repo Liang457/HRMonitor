@@ -7,10 +7,11 @@
 use crate::autostart;
 use crate::config;
 use crate::daemon_ctl as ctl;
+use crate::integrations;
 use crate::state::Core;
 use crate::{scan_job, win};
 use serde_json::{json, Value};
-use std::path::PathBuf;
+use std::path::Path;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
@@ -95,7 +96,7 @@ pub fn dispatch(core: &Arc<Core>, body: &str) {
         "scan_start" => {
             let secs = arg("secs").as_u64().unwrap_or(10).clamp(1, 120) as u32;
             if core.scan_running.swap(true, Ordering::SeqCst) {
-                core.reply(id, json!({ "ok": false, "error": "已有一次扫描在进行" }));
+                core.reply(id, json!({ "ok": false, "error": "扫描正在进行" }));
                 return;
             }
             let core2 = core.clone();
@@ -173,7 +174,7 @@ pub fn dispatch(core: &Arc<Core>, body: &str) {
                         false
                     }
                 };
-                core2.reply(id, json!({ "ok": ok, "error": if ok { Value::Null } else { json!("hr-daemon 没能拉起来，可点“启动”重试") } }));
+                core2.reply(id, json!({ "ok": ok, "error": if ok { Value::Null } else { json!("hr-daemon 启动失败，可点启动重试") } }));
             });
         }
 
@@ -190,7 +191,7 @@ pub fn dispatch(core: &Arc<Core>, body: &str) {
                         let (mut cfg, path, _) = config::load()?;
                         if cfg.demo {
                             cfg.demo = false;
-                            note = "（已顺带关闭 demo 模拟源）".to_string();
+                            note = "，已关闭模拟心率源".to_string();
                         }
                         cfg.set("address", &mac)?;
                         config::save(&cfg, &path)?;
@@ -239,20 +240,52 @@ pub fn dispatch(core: &Arc<Core>, body: &str) {
             // 否则资源管理器会弹"找不到路径"。
             let dir = config::exe_dir().join("log");
             let _ = std::fs::create_dir_all(&dir);
-            let d = win::wide(&dir.display().to_string());
-            let verb = win::wide("open");
-            let rc = unsafe { win::ShellExecuteW(std::ptr::null_mut(), verb.as_ptr(), d.as_ptr(), std::ptr::null(), std::ptr::null(), win::SW_SHOWNORMAL) };
-            core.reply(id, json!({ "ok": rc > 32, "error": if rc > 32 { Value::Null } else { json!("打开文件夹失败") } }));
+            let r = open_in_explorer(&dir);
+            core.reply(id, match r {
+                Ok(()) => json!({ "ok": true }),
+                Err(e) => json!({ "ok": false, "error": e }),
+            });
         }
 
         "open_folder" => {
-            // 打开第三方宿主的插件目录，引导手动部署。目录定位失败回 error，
-            // 面板会 toast（安装目录可在上方手填，留空则按常见位置探测）。
+            // which="plugins" 打开本程序旁的 plugins\；file=<json 文件名> 打开
+            // 对应宿主的插件目录（目录取 json 的 dir，留空按常见位置探测）。
+            // 定位失败回 error，面板会 toast。
             let which = arg("which").as_str().unwrap_or("").to_string();
-            match open_plugin_folder(&which) {
-                Ok(()) => core.reply(id, json!({ "ok": true })),
-                Err(e) => core.reply(id, json!({ "ok": false, "error": e })),
-            }
+            let file = arg("file").as_str().unwrap_or("").to_string();
+            let r = if which == "plugins" {
+                open_in_explorer(&config::exe_dir().join("plugins"))
+            } else if !file.is_empty() {
+                integrations::host_plugin_dir(&file).and_then(|d| open_in_explorer(&d))
+            } else {
+                Err("未知目录".to_string())
+            };
+            core.reply(id, match r {
+                Ok(()) => json!({ "ok": true }),
+                Err(e) => json!({ "ok": false, "error": e }),
+            });
+        }
+
+        "get_integrations" => {
+            // 读 plugins\*.json，接入区整块由它渲染。两个小文件的 IO，就地做。
+            let items: Vec<Value> = integrations::list()
+                .into_iter()
+                .map(|it| match &it.integration {
+                    Some(i) => integrations::integration_json(i, it.dll_present),
+                    None => json!({ "file": it.file, "error": it.error }),
+                })
+                .collect();
+            core.reply(id, json!({ "ok": true, "items": items }));
+        }
+
+        "set_integration_dir" => {
+            // 宿主目录写回对应 json（唯一可改的接入设置）。
+            let file = arg("file").as_str().unwrap_or("").to_string();
+            let dir = arg("dir").as_str().unwrap_or("").to_string();
+            core.reply(id, match integrations::set_dir(&file, &dir) {
+                Ok(()) => json!({ "ok": true }),
+                Err(e) => json!({ "ok": false, "error": e }),
+            });
         }
 
         _ => {
@@ -299,30 +332,9 @@ fn restore_daemon_if_needed(core: &Arc<Core>) -> Result<(), String> {
     }
 }
 
-/// 打开"第三方程序部署"相关目录（部署改成手动复制后的入口）：
-///   plugins —— 本程序旁边的 plugins\（发行包里两个插件 DLL 就在这）
-///   tm      —— TrafficMonitor 的 plugins\
-///   ab      —— MSI Afterburner 的 Plugins\Monitoring\
-/// tm/ab 的安装目录优先取 ini（integration.tm_dir / ab_dir），留空则按常见
-/// 安装位置探测；找不到不打开任何窗口，返回给人看的错误让面板提示。
-fn open_plugin_folder(which: &str) -> Result<(), String> {
-    let dir = match which {
-        "plugins" => config::exe_dir().join("plugins"),
-        "tm" | "ab" => {
-            let cfg = config::load()?.0;
-            let configured = if which == "tm" { &cfg.tm_dir } else { &cfg.ab_dir };
-            let configured = configured.trim().to_string();
-            let root = if configured.is_empty() {
-                detect_host_dir(which)?
-            } else {
-                PathBuf::from(configured)
-            };
-            let sub = if which == "tm" { "plugins" } else { r"Plugins\Monitoring" };
-            let target = root.join(sub);
-            if target.is_dir() { target } else { root }
-        }
-        _ => return Err("未知目录".to_string()),
-    };
+/// 用资源管理器打开一个目录。目录不存在先报出来（面板 toast 给人看），
+/// 免得弹一个莫名奇妙的信息窗口。
+fn open_in_explorer(dir: &Path) -> Result<(), String> {
     if !dir.is_dir() {
         return Err(format!("目录不存在：{}", dir.display()));
     }
@@ -332,23 +344,4 @@ fn open_plugin_folder(which: &str) -> Result<(), String> {
         win::ShellExecuteW(std::ptr::null_mut(), verb.as_ptr(), d.as_ptr(), std::ptr::null(), std::ptr::null(), win::SW_SHOWNORMAL)
     };
     if rc > 32 { Ok(()) } else { Err("打开文件夹失败".to_string()) }
-}
-
-/// 按常见安装位置探测宿主目录（探测条件沿用原部署脚本：认宿主 exe）。
-/// 故意不硬编码 D:\ 之类的机器布局——找不到就让用户在面板里填目录。
-fn detect_host_dir(which: &str) -> Result<PathBuf, String> {
-    let (name, marker) = if which == "tm" {
-        ("TrafficMonitor", "TrafficMonitor.exe")
-    } else {
-        ("MSI Afterburner", "MSIAfterburner.exe")
-    };
-    for var in ["ProgramFiles", "ProgramFiles(x86)"] {
-        if let Some(base) = std::env::var_os(var) {
-            let cand = PathBuf::from(base).join(name);
-            if cand.join(marker).exists() {
-                return Ok(cand);
-            }
-        }
-    }
-    Err(format!("没找到 {}（按常见安装位置探测过了）。在上方填一下安装目录再试", name))
 }

@@ -114,20 +114,29 @@ cmd /c tools\hr-manager\build.cmd :: build\hr-manager.exe            (Rust，GUI
 - 真机长测尚未完成（开发期实测设备为华为手表）：扫描→连接→订阅→设备名已验收；心率进共享内存、息屏/
   超时断开后的长时间重连还在测。协议按标准 BLE HR Profile 实现，链路用 demo 源验收过。
 
-## 第三方插件部署（手动引导）
+## 第三方插件部署（手动引导，json 驱动）
 
-- 1.2.0 起没有自动部署脚本：面板的"第三方程序接入"区是三个"打开目录"按钮
-  （`ipc.rs::open_folder` → `ShellExecuteW("open")`）+ 固定步骤说明，用户自己复制 DLL。
-  以前的 powershell 方案死在 `CreateProcessW` 拿裸名 `powershell.exe` 当 lpApplicationName
-  （不走 PATH 搜索，报错误码 2），别再走外部脚本的老路。
-- 目录定位：`plugins` = `exe_dir\plugins`（dev 布局和发行布局都成立）；`tm`/`ab` 优先读
-  ini 的 `integration.tm_dir` / `ab_dir`，留空则只探测 `%ProgramFiles%` /
-  `%ProgramFiles(x86)%` 下的宿主目录（认宿主 exe），**故意不硬编码 D:\ 这类机器布局**，
-  探测不到就报错让用户填目录。打开的是 `<TM>\plugins` / `<AB>\Plugins\Monitoring`
-  （子目录不存在就退回打开安装根目录）。
+- 没有自动部署脚本：面板"第三方程序接入"是独立卡片，整块由 `exe_dir\plugins\*.json`
+  渲染（`src/integrations.rs` 读取：宿主名、DLL 名、插件子目录、安装步骤、宿主目录），
+  每个插件一块：步骤列表 + 目录输入 + 打开目录按钮。用户自己复制 DLL。以前的 powershell
+  方案死在 `CreateProcessW` 拿裸名 `powershell.exe` 当 lpApplicationName（不走 PATH
+  搜索，报错误码 2），别再走外部脚本的老路。
+- json 随仓库走：源文件在 `ab-plugin\afterburner_hr_plugin.json` /
+  `tm-plugin\trafficmonitor_hr_plugin.json`（与 DLL 同名）；插件 build.cmd 复制进
+  `build\plugins\`（dev 布局面板才读得到）；**pack.ps1 从源目录取**，不经 build\——
+  那边的 `dir` 字段可能被面板写进本机目录值，混进发行包。json 手改坏了不崩面板，
+  对应卡片显示解析失败（`integrations::tests::repo_plugin_jsons_parse` 也在 cargo test
+  里兜一道）。
+- 宿主目录设置存在 json 的 `dir` 字段（面板写回，唯一可写键，serde Value 读改写保留
+  未知字段）；留空则探测 `%ProgramFiles%` / `%ProgramFiles(x86)%` 下认宿主 exe 的目录
+  （`host_exe` 字段），**故意不硬编码 D:\ 这类机器布局**，探测不到就报错让用户填目录。
+  打开的是 json `plugin_subdir` 指的子目录（`<TM>\plugins` / `<AB>\Plugins\Monitoring`），
+  子目录不存在就退回安装根目录。**ini 的 `[integration]` 段已删除**（C++/Rust 双副本
+  同步删），老配置里的残留段被宽容解析忽略。
 - 两个 DLL 名字：`afterburner_hr_plugin.dll` / `trafficmonitor_hr_plugin.dll`。改名时
   build.cmd（/Fe:、del 副产品、dumpbin 自查、copy）、pack.ps1、version.rc 的
-  HR_BIN_DESC、各处注释要一起动；旧名 DLL 留在宿主目录会出现重复"心率"项。
+  HR_BIN_DESC、json 文件名与其 `dll` 字段、各处注释要一起动；旧名 DLL 留在宿主目录
+  会出现重复"心率"项。
 - `run-daemon.cmd`：前台调试跑 daemon（日志直出当前控制台，Ctrl+C 停）。
 
 ## 文档
@@ -140,5 +149,8 @@ cmd /c tools\hr-manager\build.cmd :: build\hr-manager.exe            (Rust，GUI
 
 - C++20；成员变量 `m_` 前缀；中文注释（与现有代码一致）。
 - Rust：错误一律 `Result<_, String>`（给人看的中文消息）；不做呈现的库模块（daemon_ctl/
-  scan_job/autostart/config）与做呈现的 cli/gui 分层，打印/弹提示只在后者；共享状态集中在
-  `state.rs::Core`，WebView 只在主线程碰，回推一律走 `UserEvent::Eval` 经主线程执行。
+  scan_job/autostart/config/integrations）与做呈现的 cli/gui 分层，打印/弹提示只在后者；
+  共享状态集中在 `state.rs::Core`，WebView 只在主线程碰，回推一律走 `UserEvent::Eval`
+  经主线程执行。
+- 面板（`assets\index.html`）是 Material Design 3 深色风格的手写 CSS（零依赖，token 在
+  `:root`）；UI 文案一律朴实短句，**不用括号夹注**——要补充说明就另起短句或放副文本。

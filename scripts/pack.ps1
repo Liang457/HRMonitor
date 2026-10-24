@@ -11,7 +11,7 @@
 #     hr-daemon.exe  hr-manager.exe  README.md
 #     config\hr-daemon.ini            示例配置
 #     docs\LICENSE、THIRD_PARTY_NOTICES.md
-#     plugins\afterburner_hr_plugin.dll、trafficmonitor_hr_plugin.dll
+#     plugins\两个插件 DLL + 同名 .json（面板接入区的安装步骤与目录设置）
 #     scripts\                        迁移/工具脚本原样带上
 #
 # 版本一致性：Cargo.toml 的 [package] version 与 common\version.h 的
@@ -121,6 +121,17 @@ Copy-Item -LiteralPath (Join-Path $Root 'README.md')            -Destination $st
 Copy-Item -LiteralPath $ini -Destination (Join-Path $stage 'config\hr-daemon.ini')
 Copy-Item -LiteralPath (Join-Path $Root 'build\plugins\afterburner_hr_plugin.dll') -Destination (Join-Path $stage 'plugins\afterburner_hr_plugin.dll')
 Copy-Item -LiteralPath (Join-Path $Root 'build\plugins\trafficmonitor_hr_plugin.dll') -Destination (Join-Path $stage 'plugins\trafficmonitor_hr_plugin.dll')
+# 插件元数据 json 从源目录取，不走 build\plugins\：那边是开发用副本，
+# 可能被面板写进本机的宿主目录，混进发行包就脏了。
+$pluginJsons = @(
+    'ab-plugin\afterburner_hr_plugin.json',
+    'tm-plugin\trafficmonitor_hr_plugin.json'
+)
+foreach ($j in $pluginJsons) {
+    $src = Join-Path $Root $j
+    if (-not (Test-Path -LiteralPath $src)) { throw "找不到 $j —— 插件元数据 json 随仓库走，不该缺席" }
+    Copy-Item -LiteralPath $src -Destination (Join-Path $stage ("plugins\" + (Split-Path -Leaf $j)))
+}
 Copy-Item -LiteralPath (Join-Path $Root 'LICENSE')                -Destination (Join-Path $stage 'docs\LICENSE')
 Copy-Item -LiteralPath (Join-Path $Root 'THIRD_PARTY_NOTICES.md') -Destination (Join-Path $stage 'docs\THIRD_PARTY_NOTICES.md')
 Copy-Item -LiteralPath (Join-Path $Root 'scripts') -Destination (Join-Path $stage 'scripts') -Recurse

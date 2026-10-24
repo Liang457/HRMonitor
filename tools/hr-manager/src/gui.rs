@@ -146,7 +146,7 @@ pub fn run(minimized: bool) -> i32 {
                             core.toast(if enabled {
                                 "已关闭开机自启"
                             } else {
-                                "已开启开机自启（登录后只出托盘）"
+                                "已开启开机自启，登录后只在托盘运行"
                             });
                         }
                         Err(e) => core.toast(&e),
@@ -233,7 +233,7 @@ fn close_panel(core: &Arc<Core>, panel: &mut Option<panel::Panel>) {
                 // 进程可能正在退出，这条 toast 未必有机会显示；标志放回去，
                 // 标记文件还在，下次启动 manager 会再试
                 core2.scan_needs_restore.store(true, Ordering::SeqCst);
-                core2.toast(&format!("hr-daemon 没能自动拉起：{}", e));
+                core2.toast(&format!("hr-daemon 自动启动失败：{}", e));
             } else {
                 crate::scan_job::clear_marker();
             }
