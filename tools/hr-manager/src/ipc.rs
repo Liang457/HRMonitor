@@ -153,13 +153,7 @@ pub fn dispatch(core: &Arc<Core>, body: &str) {
         }
 
         "scan_cancel" => {
-            core.scan_stop.store(true, Ordering::SeqCst);
-            // take + 强杀同一个锁区间完成；CancelHandle 持有独立句柄副本，
-            // 和扫描线程 Child 的 Drop 互不影响
-            let h = core.scan_cancel.lock().unwrap().take();
-            if let Some(h) = h {
-                h.terminate();
-            }
+            cancel_scan(core);
             core.reply(id, json!({ "ok": true }));
         }
 
@@ -182,6 +176,14 @@ pub fn dispatch(core: &Arc<Core>, body: &str) {
             let mac = arg("mac").as_str().unwrap_or("").to_string();
             let core2 = core.clone();
             std::thread::spawn(move || {
+                // 选表即扫描终止：计时没到就点了设备时扫描还在跑，不取消的话
+                // 扫描线程稍后照常吐 done，面板会冒出过期的"扫描完成"和放弃按钮，
+                // 还会把粘滞标志置回去。取消后扫描线程走取消路径收尾，和这里的
+                // restart 并发没害处：单实例互斥体保证最终只有一份 daemon，
+                // 且 ini 已在重启前写入，收敛后 daemon 一定带着新地址在跑。
+                if core2.scan_running.load(Ordering::SeqCst) {
+                    cancel_scan(&core2);
+                }
                 let result = (|| -> Result<(String, String), String> {
                     let mut note = String::new();
                     {
@@ -307,6 +309,19 @@ fn apply_values(values: &Value) -> Result<(config::Config, bool), String> {
     }
     config::save(&cfg, &path)?;
     Ok((cfg, true))
+}
+
+/// 取消扫描：置位 stop 标志并强杀扫描子进程。扫描线程阻塞在读管道上，
+/// 只置位不 kill 叫不醒它。幂等：没在扫描时调用无害，stop 标志会在下次
+/// 扫描线程开头复位；没在扫描时 cancel_slot 本来就是 None。
+fn cancel_scan(core: &Arc<Core>) {
+    core.scan_stop.store(true, Ordering::SeqCst);
+    // take + 强杀同一个锁区间完成；CancelHandle 持有独立句柄副本，
+    // 和扫描线程 Child 的 Drop 互不影响
+    let h = core.scan_cancel.lock().unwrap().take();
+    if let Some(h) = h {
+        h.terminate();
+    }
 }
 
 /// daemon 因扫描停着（粘滞标志）→ 就地拉回来。成功清标志；已经在跑只清标志

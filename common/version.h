@@ -11,11 +11,11 @@
 
 #define HR_VERSION_MAJOR 1
 #define HR_VERSION_MINOR 2
-#define HR_VERSION_PATCH 1
+#define HR_VERSION_PATCH 2
 
 // 下面两行必须同值：窄/宽字符版本串。宽字符版给 tm-plugin 的
 // TMI_VERSION（宿主要 wchar_t*）用，窄字符版给 .rc 和日志用。
-#define HR_VERSION_STRING  "1.2.1"
-#define HR_VERSION_WSTRING L"1.2.1"
+#define HR_VERSION_STRING  "1.2.2"
+#define HR_VERSION_WSTRING L"1.2.2"
 
 #endif // HR_VERSION_H_INCLUDED

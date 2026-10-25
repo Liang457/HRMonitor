@@ -369,6 +369,9 @@ function renderScanEvent(e) {
   else if (e.type === "waiting") { st.textContent = "等待手表恢复广播…"; }
   else if (e.type === "device") { upsertDevice(e.mac, e.name); st.textContent = "扫描中，已发现 " + deviceCount() + " 台"; }
   else if (e.type === "done") {
+    // UI 已被选表/取消复位（scanning 已清零）后才迟到的过期 done，忽略，
+    // 免得把"扫描完成"和放弃按钮又顶出来
+    if (!scanning) return;
     scanning = false;
     setScanProgress(false);
     $("btnScan").disabled = false;
@@ -402,6 +405,7 @@ function resetScanUi() {
   $("scanProgress").classList.remove("on");
   $("btnScanDiscard").hidden = true;
   $("btnScanCancel").hidden = true;
+  $("btnScanCancel").disabled = false; // 别带着 disabled 态被下次扫描重新显示
   $("btnScan").disabled = false;
   scanning = false;
 }
@@ -568,6 +572,9 @@ function bind() {
         $("scanStatus").textContent = "";
         toast("扫描启动失败：" + (r.error || ""));
       } else if (r.cancelled) {
+        // 必须整体复位：不调 resetScanUi 的话 scanning 停在 true，
+        // 上面的防重入会把扫描按钮锁死，取消按钮也一直挂着
+        resetScanUi();
         $("scanStatus").textContent = "已取消，采集已恢复。";
       }
     });
