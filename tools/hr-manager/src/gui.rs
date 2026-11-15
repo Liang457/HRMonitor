@@ -3,7 +3,9 @@
 // 线程模型：
 //   主线程    tao 事件循环。唯一能碰窗口/WebView 的地方；所有回推都经
 //             UserEvent::Eval 在这里执行 evaluate_script。
-//   状态轮询  1 秒一次读共享内存，面板开着才推 window.__hr.status(...)。
+//   状态轮询  1 秒一次无条件探活 + 读共享内存；面板开着才推数据。探活还兼
+//             职跳变检测：daemon 意外消失（非扫描/非主动操作）只 toast 提示，
+//             新政策下 manager 不自动把 daemon 拉起来。
 //   单实例    第二个实例 SetEvent 通知后退出；监视线程收到事件 → 打开面板。
 //   慢操作    重启 daemon / 扫描 / 启动 daemon 各自起临时线程，结果经 proxy 回主线程。
 // 托盘菜单事件也统一转成 UserEvent（经 proxy），所有处理集中在一处。
@@ -64,21 +66,10 @@ pub fn run(minimized: bool) -> i32 {
     // 上次在扫描中死掉的话，daemon 还停着：看到恢复标记就把它拉回来。
     crate::scan_job::restore_pending();
 
-    // 开机自启只拉起了本进程（托盘），daemon 不会自己出现：这里兜底确保它在跑，
-    // 别让用户登录后还得开面板点"启动"。ctl::start 最长等 8 秒，丢后台线程，
-    // 别卡主线程进事件循环。用户随后手动停掉就随他（面板随时可用）；
-    // 比"记住上次状态"可预期——正常开机就该在采集。
-    {
-        let core2 = core.clone();
-        std::thread::spawn(move || {
-            if !ctl::running() {
-                if let Err(e) = ctl::start() {
-                    // 面板没开时 toast 落不到界面上，状态卡会显示"未运行"，够定位
-                    core2.toast(&e);
-                }
-            }
-        });
-    }
+    // 政策变更（2026-11-15）：开机自启只拉起 manager 本身，daemon 不再自动启动，
+    // 启停收进面板右上角的开关手动操作；daemon 那头反过来默认监视 manager
+    // （探测不到就宽限几秒自行退出），两进程谁都不留孤儿。manager 发现 daemon
+    // 意外退出只 toast 提示，不自动拉起（见 spawn_status_thread 的跳变检测）。
 
     // ---- 托盘。起不来就退化成"纯面板"模式：面板一关即退出。
     let tray = match crate::tray::Tray::build() {
@@ -130,9 +121,23 @@ pub fn run(minimized: bool) -> i32 {
                 UserEvent::OpenPanel => open_or_focus(&core, target, &mut panel),
                 UserEvent::RestartDaemon => {
                     let core2 = core.clone();
-                    std::thread::spawn(move || match ctl::restart() {
-                        Ok(m) => core2.toast(&m),
-                        Err(e) => core2.toast(&e),
+                    std::thread::spawn(move || {
+                        // 主动重启：立"过渡中"标志，重启的停顿不许被状态轮询
+                        // 当成 daemon 异常退出报了警（托盘菜单/面板一样处理）
+                        core2.daemon_stop_expected.store(true, Ordering::SeqCst);
+                        let r = match ctl::restart() {
+                            Ok(m) => {
+                                if ctl::running() {
+                                    core2.daemon_stop_expected.store(false, Ordering::SeqCst);
+                                }
+                                Ok(m)
+                            }
+                            Err(e) => Err(e),
+                        };
+                        match r {
+                            Ok(m) => core2.toast(&m),
+                            Err(e) => core2.toast(&e),
+                        }
                     });
                 }
                 UserEvent::ToggleAutostart => {
@@ -248,12 +253,29 @@ fn close_panel(core: &Arc<Core>, panel: &mut Option<panel::Panel>) {
 fn spawn_status_thread(core: Arc<Core>) {
     std::thread::spawn(move || {
         let mut reader = shared_mem::Reader::new();
+        // 上一轮 daemon 存活态；None = 第一轮只建基线，不报警
+        let mut prev_running: Option<bool> = None;
         loop {
             unsafe { win::Sleep(1000) };
+            // 探活无条件做：互斥体探测很便宜，而且上一轮状态要连续记录，
+            // 面板没开时 daemon 没了也得知道，等面板打开后跳变检测才有基线
+            let daemon = ctl::running();
+            if prev_running == Some(true) && !daemon {
+                // running→stopped 跳变。三张豁免票：扫描在跑（扫描自己会停
+                // daemon 并负责拉回）、扫描欠恢复（粘滞标志）、有一方在主动
+                // 停/重启（daemon_stop_expected，swap 消费一次）。都不成立才
+                // 是被关闭或异常退出——新政策只提示，不自动重启。
+                let expected = core.scan_running.load(Ordering::SeqCst)
+                    || core.scan_needs_restore.load(Ordering::SeqCst)
+                    || core.daemon_stop_expected.swap(false, Ordering::SeqCst);
+                if !expected {
+                    core.toast("hr-daemon 已退出（被关闭或异常），未自动重启");
+                }
+            }
+            prev_running = Some(daemon);
             if !core.panel_open.load(Ordering::SeqCst) {
                 continue;
             }
-            let daemon = ctl::running();
             let now = shared_mem::now_ms();
             let timeout = core.timeout_ms.load(Ordering::SeqCst) as u64;
             // daemon 没跑就是没跑：映射对象因为读端握着句柄而活着，daemon 退出后
@@ -266,6 +288,7 @@ fn spawn_status_thread(core: Arc<Core>) {
                     "status": "off",
                     "device": "",
                     "ageSec": 0,
+                    "scanning": core.scan_running.load(Ordering::SeqCst),
                 })
             } else {
                 match reader.read() {
@@ -286,6 +309,7 @@ fn spawn_status_thread(core: Arc<Core>) {
                             "status": status,
                             "device": s.device,
                             "ageSec": now.saturating_sub(s.tick_ms) / 1000,
+                            "scanning": core.scan_running.load(Ordering::SeqCst),
                         })
                     }
                     None => json!({
@@ -294,6 +318,7 @@ fn spawn_status_thread(core: Arc<Core>) {
                         "status": "connecting",
                         "device": "",
                         "ageSec": 0,
+                        "scanning": core.scan_running.load(Ordering::SeqCst),
                     }),
                 }
             };

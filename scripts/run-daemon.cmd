@@ -6,6 +6,10 @@ rem started from cmd it attaches to this console, which means the log streams he
 rem live and Ctrl+C stops it cleanly. cmd will keep this window busy until the
 rem daemon exits -- that is intentional for a foreground/debug run.
 rem
+rem The script always appends --watch-manager=0: this is a no-manager debug run,
+rem and the daemon's default manager watch would make it exit by itself after a
+rem 5 second grace period once it cannot see hr-manager.
+rem
 rem To run it detached instead, use one of:
 rem   start "" build\hr-daemon.exe            (in a new window)
 rem   hr-manager.exe (tray) or its Run-key autostart  (auto-start at logon)
@@ -26,12 +30,12 @@ if not exist "%EXE%" (
     exit /b 1
 )
 
-echo [run] %CD%\%EXE% %*
+echo [run] %CD%\%EXE% %* --watch-manager=0
 echo [run] log file: %CD%\build\log\hr-daemon.log
 echo [run] Ctrl+C to stop.
 echo.
 
-"%EXE%" %*
+"%EXE%" %* --watch-manager=0
 set "RC=%ERRORLEVEL%"
 echo.
 echo [run] hr-daemon exited with code %RC%

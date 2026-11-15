@@ -27,6 +27,7 @@ namespace {
 
 constexpr UINT_PTR kTimerId     = 1;
 constexpr UINT     kTimerMs     = 100;    // 主循环节拍（分辨率；出数据按配置的 refresh_ms）
+constexpr int      kWatchMgrGraceSec = 5; // manager 监视的默认宽限秒数
 
 struct Options {
     bool               demo        = false;   // 命令行覆盖配置
@@ -39,6 +40,8 @@ struct Options {
     int                scanSec     = 0;       // 0 = 未在命令行给出，用配置里的 scan_timeout_ms
     bool               quiet       = false;   // --quiet：不附加控制台，日志只写文件（hr-manager 拉起时用）
     bool               version     = false;   // --version：打印版本号后退出
+    int                watchMgr    = -1;      // manager 监视：-1 = 未给参数（默认开启，宽限 5 秒）；
+                                                  // 0 = 关闭；大于 0 = 宽限秒数（--watch-manager=N）
 };
 
 // ---------------------------------------------------------------- 全局状态
@@ -55,6 +58,9 @@ bool        g_firstTick   = true;
 int         g_prevOut     = -2;             // -2 = 尚未写过
 DWORD       g_prevStatus  = (DWORD)-1;
 std::wstring g_prevDevice;
+
+int         g_watchMgrSec = 0;              // manager 监视宽限秒数；0 = 不监视（Run 里按参数写入，
+                                            // 触发退出后也归零，防止重复投递 WM_CLOSE）
 
 // ---------------------------------------------------------------- 工具
 
@@ -90,6 +96,36 @@ void BuildRecord(HrSharedData& d, int out, DWORD status, const std::wstring& dev
 
 // 每个主循环节拍（100ms）：判断是否超时、按需写共享内存。
 void Tick() {
+    // ---- manager 监视：每 10 拍（约 1 秒）探测一次 hr-manager 是否还在。
+    // hr-manager 的单实例互斥体它整个生命周期都握着，OpenMutexW 打开 = 在跑。
+    // 连续缺失达到宽限秒数就走 WM_CLOSE 的优雅退出路径（收 BLE、关共享内存映射）。
+    // --watch-manager=0（独立部署，如纯插件用户）时整段跳过。
+    if (g_watchMgrSec > 0) {
+        static int s_watchDiv = 0;      // 100ms 拍分频到 1 秒（仅主线程定时器调用，无并发）
+        static int s_missing  = 0;      // 连续缺失的整秒数
+        static bool s_warned  = false;  // 进入宽限只提示一次，别每秒刷日志
+        if (++s_watchDiv >= 10) {
+            s_watchDiv = 0;
+            HANDLE mgr = OpenMutexW(SYNCHRONIZE, FALSE, HR_MUTEX_MANAGER);
+            if (mgr) {
+                CloseHandle(mgr);
+                s_missing = 0;
+                s_warned = false;
+            } else {
+                if (!s_warned) {
+                    LogInfo("hr-manager 不可见，宽限计时开始（%d 秒后自动退出）", g_watchMgrSec);
+                    s_warned = true;
+                }
+                if (++s_missing >= g_watchMgrSec) {
+                    LogInfo("hr-manager 已持续 %d 秒不可见，按 manager 监视策略自动退出"
+                            "（独立部署加 --watch-manager=0）", g_watchMgrSec);
+                    g_watchMgrSec = 0;   // 只投一次；WM_CLOSE 的收尾路径照常走完
+                    PostMessageW(g_hwnd, WM_CLOSE, 0, 0);
+                }
+            }
+        }
+    }
+
     const ULONGLONG    now = GetTickCount64();
     HrSink::Snapshot   s   = g_sink.Get();
 
@@ -202,6 +238,10 @@ void PrintUsage() {
     LogInfo("                             直连指定手表");
     LogInfo("  hr-daemon.exe --debug      连每条心率都写进日志（平时不写）");
     LogInfo("  hr-daemon.exe --quiet      不附加控制台，日志只写文件（hr-manager 拉起时用）");
+    LogInfo("  hr-daemon.exe --watch-manager[=N]");
+    LogInfo("                             监视 hr-manager 是否存活（默认开启，宽限 5 秒）：");
+    LogInfo("                             连续探测不到就自动退出；=0 关闭监视，供不带");
+    LogInfo("                             hr-manager 的独立部署（如纯插件用户）");
     LogInfo("  hr-daemon.exe --version    显示版本号后退出");
     LogInfo("  hr-daemon.exe --help       显示本帮助");
     LogInfo("");
@@ -320,6 +360,14 @@ int Run(HINSTANCE hInst, const Options& opt) {
         LogInfo("hr-daemon %s 已启动（PID %lu），按 Ctrl+C 退出",
                 HR_VERSION_STRING, GetCurrentProcessId());
 
+    // ---- manager 监视：参数未给时默认开启、宽限 5 秒（两进程互相监测的一半：
+    // manager 不再兜底拉起 daemon，daemon 自己盯 manager，被关掉就跟着退）
+    g_watchMgrSec = (opt.watchMgr < 0) ? kWatchMgrGraceSec : opt.watchMgr;
+    if (g_watchMgrSec > 0)
+        LogInfo("manager 监视: 开启（宽限 %d 秒，hr-manager 不在时自动退出）", g_watchMgrSec);
+    else
+        LogInfo("manager 监视: 关闭");
+
     // ---- 消息循环
     MSG msg;
     while (GetMessageW(&msg, nullptr, 0, 0) > 0) {
@@ -375,6 +423,20 @@ Options ParseArgs(int argc, wchar_t** argv, std::vector<std::string>& warns) {
                 wchar_t* end = nullptr;
                 long sec = wcstol(argv[i + 1], &end, 10);
                 if (end && *end == L'\0' && sec > 0) { o.scanSec = (int)sec; ++i; }
+            }
+        } else if (a == L"--watch-manager") {
+            o.watchMgr = kWatchMgrGraceSec;   // 裸参数：默认开启（宽限 5 秒）
+        } else if (a.rfind(L"--watch-manager=", 0) == 0) {
+            // =N 形式：N 不小于 0。解析失败按警告处理并保持默认开启——
+            // 宁可多监视也不误退出
+            const std::wstring v = a.substr(16);
+            wchar_t* end = nullptr;
+            long n = wcstol(v.c_str(), &end, 10);
+            if (end && *end == L'\0' && n >= 0) {
+                o.watchMgr = (int)n;
+            } else {
+                warn("无法解析 --watch-manager=\"%s\"（要非负整数秒），按默认开启（宽限 %d 秒）处理",
+                     ToUtf8(v).c_str(), kWatchMgrGraceSec);
             }
         } else {
             warn("忽略未知参数 \"%s\"", ToUtf8(a).c_str());

@@ -14,6 +14,9 @@ cmd /c daemon\build.cmd           :: build\hr-daemon.exe             (C++, x64)
 cmd /c ab-plugin\build.cmd        :: build\plugins\afterburner_hr_plugin.dll     (C++, x86，必须 x86)
 cmd /c tm-plugin\build.cmd        :: build\plugins\trafficmonitor_hr_plugin.dll (C++, x64)
 cmd /c tools\osd_test\build.cmd   :: build\osd_test.exe              (C++, x64)
+cd tools\hr-manager\panel-src && npm install && node build.mjs
+                                  :: tools\hr-manager\src\assets\index.html（面板单文件；
+                                  ::   改前端后必须重建，cargo 编译前它必须存在）
 cmd /c tools\hr-manager\build.cmd :: build\hr-manager.exe            (Rust，GUI 栈依赖见下)
 ```
 
@@ -28,7 +31,8 @@ cmd /c tools\hr-manager\build.cmd :: build\hr-manager.exe            (Rust，GUI
   hr-manager 面板的状态卡也应显示模拟心率。
 - **发行版由 GitHub Actions 编译，不在本地出包**：`.github/workflows/release.yml`
   （push main / 打 v* 标签 / 手动触发）在 windows-latest 上复用仓库的 build.cmd 构建
-  四个发行组件（osd_test 不进发行；dumpbin 自检在 CI 同样生效），再调
+  四个发行组件（osd_test 不进发行；dumpbin 自检在 CI 同样生效）；hr-manager 之前先
+  setup-node + `npm ci && node build.mjs` 出面板单文件。再调
   `scripts\pack.ps1` 组装压 zip。push main 只产 dev artifact
   （`HRMonitor-dev-<短SHA>-win64.zip`）供下载，打 v* 标签才创建 GitHub Release。
   本地构建只做开发验证；本地跑 `powershell -ExecutionPolicy Bypass -File
@@ -47,7 +51,7 @@ cmd /c tools\hr-manager\build.cmd :: build\hr-manager.exe            (Rust，GUI
 - `common/hr_config.{h,cpp}`：INI 读写 + 配置结构，daemon 和 tm-plugin 共用（C++ 读端）。
   `tools/hr-manager/src/config.rs` 是 Rust 写端副本：键名/注释/钳位必须与 C++ 读端保持一致。
 - `common/hr_names.h` 与 `tools/hr-manager/src/names.rs` 是一对跨语言常量副本
-  （daemon 互斥体名、窗口类名）——改任何一个必须两边同步。
+  （daemon 互斥体名、窗口类名、manager 互斥体名）——改任何一个必须两边同步。
 - `common/version.h` 与 `tools/hr-manager/Cargo.toml` 的 `[package] version` 是产品版本号的
   跨语言双副本——改版本必须两边同步；`scripts\pack.ps1` 打包时强制校验一致（HEAD 带 v* 标签
   时连标签一起校验）。各 exe/DLL 的 PE 版本资源、daemon `--version`、hr-manager
@@ -63,15 +67,20 @@ cmd /c tools\hr-manager\build.cmd :: build\hr-manager.exe            (Rust，GUI
   hr-manager 起子进程读流，自己不碰蓝牙。
 - hr-manager（Rust）= 托盘常驻 + 按需弹出的 WebView2 配置面板 + CLI 子命令：管理 daemon
   生命周期（FindWindowW+WM_CLOSE 优雅停 / OpenMutexW 探活）、读写 ini、读共享内存显示实时
-  状态、调度扫描、管理开机自启（注册表 Run 键）。**启动时兜底确保 daemon 在跑**（后台线程
-  探活，没跑就 `ctl::start()`）——开机自启只拉起 manager 本身，daemon 靠这一下带起来。
+  状态、调度扫描、管理开机自启（注册表 Run 键）。**两进程互相监测**（2026-11-15 起）：
+  daemon 默认监视 manager（OpenMutexW 探 `Local\BleHR_manager`，宽限 5 秒，`--watch-manager=N`
+  调宽限、`=0` 关闭——CLI 的 start/restart/scan 拉起 daemon 一律带 =0，因为 CLI 进程马上
+  退出）；manager **不自动启动 daemon**，启停收进面板右上角开关，状态轮询线程发现 daemon
+  意外退出（非扫描/非主动操作，`Core::daemon_stop_expected` 豁免过渡期）只 toast 提示。
   面板关闭即整体销毁 WebView2（内存回落），托盘进程本身保留。
 - **依赖策略：业务代码不引第三方**。C++ 只用 Windows SDK（BLE 用自带 C++/WinRT）。Rust 端
   仅有的例外是 hr-manager 的 GUI 栈（wry + tao + tray-icon + serde/serde_json）和构建期
   专用的 winresource（build.rs 嵌 PE 版本信息，不进运行时），Cargo.lock 锁
   版本，首次构建需联网；其余（配置/进程/注册表/共享内存/管道）全部是 `src/win.rs` 手写
-  `extern "system"` 声明。**不要再扩大依赖面，也不要引 npm/前端构建链**（面板是
-  `include_str!` 嵌入的零依赖原生 HTML/CSS/JS 单页）。
+  `extern "system"` 声明。**不要再扩大 Rust/C++ 的依赖面**。前端例外：面板源码在
+  `tools/hr-manager/panel-src/`（@material/web 官方组件 + esbuild，node 构建链，
+  package-lock 锁版本），`node build.mjs` 内联压缩成单文件 `src/assets/index.html`
+  给 `include_str!` 吃——产物不入库、不手工编辑、零外部引用，改前端必须走 panel-src。
 
 ## 硬性约束 / 已知坑
 
@@ -86,8 +95,8 @@ cmd /c tools\hr-manager\build.cmd :: build\hr-manager.exe            (Rust，GUI
 - 换行符约定：.cmd/.bat/.ps1 = CRLF；.cpp/.h/.rs/.md/.toml/.ini/.lock = LF。
 - **自启用注册表 Run 键**（`HKCU\...\CurrentVersion\Run`，值名 `BleHRManager`，指向
   `hr-manager.exe --minimized`）：无管理员、天然在当前登录会话，共享内存 `Local\` 命名空间
-  因此一定对。Run 键只拉起 manager，daemon 由 manager 启动时的兜底探活带起来（见架构边界）。
-  老版本的计划任务方案已废弃（会话 0 命名空间的坑随之消失），残留清理用
+  因此一定对。Run 键只拉起 manager；daemon 不自动启动，面板开关手动启停（见架构边界的
+  互相监测）。老版本的计划任务方案已废弃（会话 0 命名空间的坑随之消失），残留清理用
   `scripts\uninstall-task.ps1`，面板会检测残留并提示。
 - daemon 命令行参数（`--demo`/`--address`）优先于 hr-daemon.ini；daemon 单实例互斥体
   `Local\BleHR_daemon`，manager 单实例互斥体 `Local\BleHR_manager`。第二个 manager
@@ -137,13 +146,15 @@ cmd /c tools\hr-manager\build.cmd :: build\hr-manager.exe            (Rust，GUI
   build.cmd（/Fe:、del 副产品、dumpbin 自查、copy）、pack.ps1、version.rc 的
   HR_BIN_DESC、json 文件名与其 `dll` 字段、各处注释要一起动；旧名 DLL 留在宿主目录
   会出现重复"心率"项。
-- `run-daemon.cmd`：前台调试跑 daemon（日志直出当前控制台，Ctrl+C 停）。
+- `run-daemon.cmd`：前台调试跑 daemon（日志直出当前控制台，Ctrl+C 停）。脚本自动补
+  `--watch-manager=0`——它是无 manager 的调试跑法，不带这个参数 daemon 会在宽限后自己退出。
 
 ## 文档
 
 - `README.md`：用法、配置、排查（hr-daemon/hr-manager 命令行、ini 键表、插件手动部署）。
-- `THIRD_PARTY_NOTICES.md`：`tm-plugin/PluginInterface.h` 取自 TrafficMonitor，Anti-996
-  许可，分发约束见此。
+- `THIRD_PARTY_NOTICES.md`：第三方组件授权说明——`tm-plugin/PluginInterface.h` 取自
+  TrafficMonitor（Anti-996 许可，分发约束见此）；面板构建链 @material/web（Apache-2.0）
+  与 esbuild（MIT）也在列。
 
 ## 风格
 
@@ -152,5 +163,8 @@ cmd /c tools\hr-manager\build.cmd :: build\hr-manager.exe            (Rust，GUI
   scan_job/autostart/config/integrations）与做呈现的 cli/gui 分层，打印/弹提示只在后者；
   共享状态集中在 `state.rs::Core`，WebView 只在主线程碰，回推一律走 `UserEvent::Eval`
   经主线程执行。
-- 面板（`assets\index.html`）是 Material Design 3 深色风格的手写 CSS（零依赖，token 在
-  `:root`）；UI 文案一律朴实短句，**不用括号夹注**——要补充说明就另起短句或放副文本。
+- 面板（`src\assets\index.html`）由 `tools\hr-manager\panel-src` 构建：@material/web
+  官方组件（md-tabs/md-switch/md-*-button/md-filled-text-field/md-linear-progress/md-dialog）
+  + Material Theme Builder 导出的暗色 token（`theme-export\dark.css`，在 `:root`），
+  esbuild 打包压缩内联成单文件。UI 文案一律朴实短句，**不用括号夹注**——要补充说明
+  就另起短句或放副文本。

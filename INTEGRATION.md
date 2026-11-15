@@ -226,6 +226,10 @@ Rust 接入可参考 `tools/hr-manager/src/shared_mem.rs`：手写 `extern "syst
 
 ## 验证与排查
 
+daemon 生命周期一句话：hr-daemon 默认监视 hr-manager（OpenMutexW 探
+`Local\BleHR_manager`，宽限 5 秒），manager 不在它就自己退出；**独立部署**（只有 daemon
+和读取端、没有 hr-manager 常驻）启动 daemon 要加 `--watch-manager=0` 才能常驻。
+
 不用手表就能验证整条链路——开 demo 模拟源（60–180 bpm 正弦波动，设备名"DEMO 模拟心率"）：
 
 ```cmd
@@ -239,6 +243,7 @@ hr-manager.exe restart
 
 | 现象 | 原因 |
 |---|---|
+| daemon 起来几秒后自己退出（日志有"manager 监视"字样） | 默认监视 hr-manager 而它不在：独立部署加 `--watch-manager=0` |
 | `OpenFileMappingW` 打不开（GetLastError=2） | daemon 没在跑；或本进程不在同一登录会话（Windows 服务、其他用户） |
 | 打得开但 magic 不符 | 映射里不是本协议的数据（同名的别人的映射），按无效数据处理 |
 | 一直 `--` 且 status=0 | daemon 没配置手表地址（`config\hr-daemon.ini` 的 `[source] address`） |
@@ -252,6 +257,7 @@ hr-manager.exe restart
 |---|---|---|
 | `Local\BleHR_SM` | 文件映射 | 心率数据本体（本文主角） |
 | `Local\BleHR_daemon` | 互斥体 | daemon 单实例标记，可用来探活 |
+| `Local\BleHR_manager` | 互斥体 | hr-manager 单实例标记；daemon 的 manager 监视靠它探活（`--watch-manager`） |
 | `BleHRDaemonWnd` | 隐藏窗口类 | `FindWindowW` 找到后发 `WM_CLOSE` 可优雅停 daemon |
 
 ## 版本契约

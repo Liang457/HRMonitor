@@ -6,6 +6,10 @@ tm-plugin/obj/
 ab-plugin/obj/
 tools/osd_test/obj/
 tools/hr-manager/target/
+# 面板是构建产物：源码在 tools/hr-manager/panel-src/（@material/web + esbuild），
+# node build.mjs 生成下面的单文件给 include_str! 吃；不入库、不手工编辑
+tools/hr-manager/src/assets/index.html
+tools/hr-manager/panel-src/node_modules/
 
 # 中间文件一律不进仓库
 *.obj

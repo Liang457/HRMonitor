@@ -14,14 +14,17 @@ BLE 心率设备（心率广播） ──BLE──▶ hr-daemon.exe ──写─
 
 daemon 只负责采集和写共享内存，蓝牙全在它这边；三个读端各自去读，互不依赖。
 
-`hr-manager.exe` 是管理器：托盘常驻，配置面板（WebView2 渲染的 HTML 单页）按需弹出、
+`hr-manager.exe` 是管理器：托盘常驻，配置面板（WebView2 渲染的单文件 HTML，由
+[panel-src](tools/hr-manager/panel-src) 用 @material/web 官方组件构建）按需弹出、
 关闭即整体销毁；同一个 exe 带 CLI 子命令，开机自启、选表扫描、重启采集都在它身上，
-第三方插件的部署改成了"打开插件目录 + 手动复制"的引导。
+第三方插件的部署改成了"打开插件目录 + 手动复制"的引导。面板右上角有 hr-daemon 启停
+开关；两进程互相监测：daemon 默认监视 manager（manager 不在则宽限几秒自行退出），
+manager 发现 daemon 意外退出只提示，不自动拉起。
 
 BLE 走 Windows SDK 自带的 C++/WinRT（链接 `windowsapp.lib`），两个插件只依赖 `kernel32`；
-hr-manager 的 GUI 栈（wry + tao + tray-icon）和构建期嵌版本信息的 winresource 是仅有的
-第三方 crate（后者只在 build.rs 用）。第三方组件的授权情况见
-[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
+hr-manager 的 GUI 栈（wry + tao + tray-icon）、构建期嵌版本信息的 winresource、面板的
+@material/web + esbuild 构建链是仅有的第三方依赖（后者只在构建面板时用）。第三方组件的
+授权情况见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
 
 ## 功能
 
@@ -29,8 +32,11 @@ hr-manager 的 GUI 栈（wry + tao + tray-icon）和构建期嵌版本信息的 
   （退避从 1 秒翻倍到 30 秒）
 - **两个显示端**：Afterburner 里是一条名为 `Heart rate` 的原生监控数据源（bpm），
   TrafficMonitor 里是任务栏上的一项 `HR 128`
-- **管理器 hr-manager**：托盘常驻 + 配置面板，实时心率、扫描选表、改配置、开机自启、
-  打开插件目录都在一页里
+- **管理器 hr-manager**：托盘常驻 + 桌面化三标签配置面板（心率与连接、配置、插件），
+  实时心率、扫描选表、改配置、开机自启、打开插件目录都在面板里；右上角开关单独启停
+  hr-daemon
+- **两进程互相监测**：daemon 默认监视 hr-manager，探测不到就宽限 5 秒自动退出
+  （`--watch-manager` 可调）；hr-manager 不自动启动 daemon，发现 daemon 意外退出只提示
 - **模拟源**：`demo=1` 时用心率随机游走代替手表，没有表也能验通整条链路
 - **设备区分**：按 MAC 直连，换手表只改 `address` 一行
 - **版本一致**：四个 exe/DLL 的文件属性带版本号（资源管理器 → 属性 → 详细信息），
@@ -54,6 +60,7 @@ HRMonitor\
 ├─ tm-plugin\                  trafficmonitor_hr_plugin.dll（C++，x64）：TrafficMonitor 插件
 ├─ tools\
 │  ├─ hr-manager\              hr-manager.exe（Rust + wry）：托盘/配置面板/CLI
+│  │  └─ panel-src\            面板源码（@material/web + esbuild），构建出 src/assets/index.html
 │  ├─ mahm-probe\              读 Afterburner 共享内存的小脚本，排查用
 │  └─ osd_test\                osd_test.exe（C++）：D3D11 清屏窗口，验证 OSD 用
 ├─ scripts\                    发行打包 / 迁移 / 旧自启清理脚本
@@ -64,20 +71,28 @@ HRMonitor\
 
 ### 构建
 
-需要 MSVC（VS 2019/2022/2026 的 Build Tools 都行，要包含 x86 目标）和 Rust 工具链
-（只有 hr-manager 需要，[rustup.rs](https://rustup.rs) 默认选项即可）。
+需要 MSVC（VS 2019/2022/2026 的 Build Tools 都行，要包含 x86 目标）、Rust 工具链
+（只有 hr-manager 需要，[rustup.rs](https://rustup.rs) 默认选项即可）和 Node.js（只有
+面板源码构建需要，面板构建链见 `tools/hr-manager/panel-src/`）。
 
 ```cmd
 cmd /c daemon\build.cmd           :: -> build\hr-daemon.exe            (C++, x64)
 cmd /c ab-plugin\build.cmd        :: -> build\plugins\afterburner_hr_plugin.dll    (C++, x86, 需要 x86 工具集)
 cmd /c tm-plugin\build.cmd        :: -> build\plugins\trafficmonitor_hr_plugin.dll (C++, x64)
 cmd /c tools\osd_test\build.cmd   :: -> build\osd_test.exe             (C++, x64)
+
+cd tools\hr-manager\panel-src     :: 面板源码 → 单文件产物（cargo 编译前它必须存在）
+npm install
+node build.mjs                    :: -> tools\hr-manager\src\assets\index.html
+cd ..\..
+
 cmd /c tools\hr-manager\build.cmd :: -> build\hr-manager.exe           (Rust + WebView2 GUI)
 ```
 
-hr-manager 首次构建要联网拉依赖（Cargo.lock 已锁版本），之后可离线重建，其余部分不
-依赖网络；面板用系统自带的 WebView2 渲染。各 `.cmd` 用 `vswhere` 找 MSVC，不绑死 VS
-版本；C++ 产物是 `/MT` 静态 CRT，目标机器不用装 VC++ 运行库。
+hr-manager 首次构建要联网拉依赖（Cargo.lock 已锁版本），面板首次构建同样要联网
+（package-lock.json 锁版本），之后可离线重建，其余部分不依赖网络；面板用系统自带的
+WebView2 渲染。各 `.cmd` 用 `vswhere` 找 MSVC，不绑死 VS 版本；C++ 产物是 `/MT` 静态
+CRT，目标机器不用装 VC++ 运行库。
 
 `ab-plugin` 必须是 x86：`MSIAfterburner.exe` 是 32 位进程（PE `0x14C`），加载不了 x64
 DLL。daemon 是 x64 不影响，两边只通过共享内存交换数据。`ab-plugin\build.cmd` 自己用
@@ -94,7 +109,8 @@ DLL。daemon 是 x64 不影响，两边只通过共享内存交换数据。`ab-p
 版本号是两回事）。
 
 发行版由 [GitHub Actions](.github/workflows/release.yml) 构建：push 到 main 出
-Artifacts，推 `v*` 标签建 Release 并附完整发行包。组装/校验/压缩都收在
+Artifacts，推 `v*` 标签建 Release 并附完整发行包。CI 在 hr-manager 之前先装 Node 并
+`npm ci && node build.mjs` 构建面板单文件。组装/校验/压缩都收在
 `scripts\pack.ps1`，本地打一个同样的包：
 `powershell -ExecutionPolicy Bypass -File scripts\pack.ps1`（产物在 `dist\`）。
 发行目录的根只放 exe 和 README.md，其余各归子目录：`config\`（示例配置）、`docs\`
@@ -281,9 +297,11 @@ Afterburner 通常以管理员身份运行，而它启动时会加载该目录�
 `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` 写 `BleHRManager` →
 `"…\hr-manager.exe" --minimized`。
 
-走 Run 键而不是计划任务：不需要管理员，登录后只出托盘不弹面板，并自动把 daemon 拉起来
-（hr-manager 每次启动都会检查 daemon，没在跑就启动它，所以手动打开面板也一样），daemon
-与插件天然同在一个登录会话（`Local\` 命名空间一定对），manager 退出也不连带杀 daemon。
+走 Run 键而不是计划任务：不需要管理员，登录后只出托盘不弹面板，daemon 与插件天然同在
+一个登录会话（`Local\` 命名空间一定对）。开机后 daemon 不自动运行：先开面板，用右上角
+开关启动，或者连一次表（扫描选表保存的地址在启动 daemon 时生效）。两进程互相监测——
+daemon 默认监视 hr-manager（探测不到就宽限 5 秒自动退出），所以 manager 被关掉时
+daemon 会跟着收摊；反过来 daemon 被关掉时 manager 只弹一条提示，不会自作主张把它拉起来。
 旧版本的计划任务（`HuaweiHRDaemon`）已废弃，面板检测到残留会提示，清理跑
 `powershell -ExecutionPolicy Bypass -File scripts\uninstall-task.ps1`。想让开机后真正连上
 表，先用 hr-manager 选表保存（写 `source.address`），自启实例读的是同一份 ini。
@@ -312,7 +330,7 @@ Afterburner 通常以管理员身份运行，而它启动时会加载该目录�
 ## hr-daemon 命令行参数
 
 ```
-hr-daemon.exe [--demo] [--address AA:BB:CC:DD:EE:FF] [--scan [秒数]] [--debug] [--quiet] [--version] [--help]
+hr-daemon.exe [--demo] [--address AA:BB:CC:DD:EE:FF] [--scan [秒数]] [--debug] [--quiet] [--watch-manager[=N]] [--version] [--help]
 ```
 
 | 参数 | 作用 |
@@ -322,13 +340,20 @@ hr-daemon.exe [--demo] [--address AA:BB:CC:DD:EE:FF] [--scan [秒数]] [--debug]
 | `--scan [秒数]` | 只扫描附近的广播设备，边扫边往 stdout 按行吐 JSON（`device`/`done`），扫完退出 |
 | `--debug` | 连每条心率都写进日志 |
 | `--quiet` | 不附加控制台，日志只写文件（hr-manager 拉起时用） |
+| `--watch-manager[=N]` | 监视 hr-manager 是否存活（默认开启，宽限 5 秒），连续探测不到就自动退出；`=0` 关闭监视 |
 | `--version` | 显示版本号后退出 |
 
 单实例靠互斥体 `Local\BleHR_daemon`，重复启动记一行日志后退出。正常退出（`taskkill`
 不带 `/F`、Ctrl+C、注销、关机）会关掉共享内存映射，正在扫描时也能立刻收手。
 
+**纯插件用户注意**：不带 hr-manager 的独立部署（只跑 daemon + 两个插件）必须手动加
+`--watch-manager=0` 启动，否则 daemon 会在 5 秒宽限后因探测不到 hr-manager 自己退出。
+
 hr-manager 拉起 / restart 出来的 daemon 都带 `--quiet`，不附加控制台、日志只进文件，
 面板关开、manager 退出都不会连带杀掉它；从 cmd 手动跑则附加父控制台、日志同屏，可 Ctrl+C。
+面板右上角开关拉起的 daemon 带默认监视；CLI 的 `start`/`restart`/`scan` 拉起的 daemon
+带 `--watch-manager=0`（CLI 进程马上退出，没人可监视，daemon 必须独立常驻）；
+`scripts\run-daemon.cmd` 前台调试跑法也自动补这个参数。
 
 ## 排查
 
@@ -337,6 +362,7 @@ hr-manager 拉起 / restart 出来的 daemon 都带 `--quiet`，不附加控制�
 
 | 现象 | 排查 |
 |---|---|
+| daemon 启动后几秒钟自己退出，日志里有"manager 监视" | daemon 默认监视 hr-manager，探测不到 manager 就宽限退出：装上 hr-manager 一起用，或加 `--watch-manager=0` 独立运行 |
 | OSD 和任务栏都是 `--`，日志"未配置手表地址，不连接" | 还没选表：面板扫描选表，或 `set address <MAC>` + `restart` |
 | 日志反复 "BLE: N 秒后重试" / "找不到设备 …" | 手表没停在心率广播页面 / 没亮屏 / 太远 / 被手机连走。用 `hr-daemon.exe --scan 10` 确认广播在线 |
 | 日志 "无法启动扫描 …（蓝牙适配器关了？）" | 电脑蓝牙关了，或适配器被禁用 |

@@ -35,6 +35,14 @@ pub struct Core {
     /// 扫描正常结束后 daemon 保持停止（等用户选表）。此时若用户不选而离开
     /// （放弃/关面板），要把 daemon 拉回来。
     pub scan_needs_restore: AtomicBool,
+    /// true = 有一方在**主动**停或重启 daemon（面板开关/重启、托盘重启采集、
+    /// apply_address 等），过渡期的 running→stopped 跳变不许被状态轮询线程
+    /// 当成异常退出报警。消费规则：
+    ///   * 状态轮询线程发现跳变时 `swap(false)` 消费一次（豁免当次报警）；
+    ///   * 操作线程进操作前置 true，操作结束且 daemon 恢复运行后清 false
+    ///     （stop 的 Ok = 按计划停下，不清，留给跳变检测消费）；
+    ///   * 置位方崩溃漏清的后果只是下一次意外退出少报一次警，可接受。
+    pub daemon_stop_expected: AtomicBool,
     /// 旧版计划任务 HuaweiHRDaemon 是否存在（启动时后台查一次，schtasks 可能慢）
     pub old_task: AtomicBool,
 }
@@ -49,6 +57,7 @@ impl Core {
             scan_stop: AtomicBool::new(false),
             scan_cancel: CancelSlot::new(None),
             scan_needs_restore: AtomicBool::new(false),
+            daemon_stop_expected: AtomicBool::new(false),
             old_task: AtomicBool::new(false),
         })
     }

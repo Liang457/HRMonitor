@@ -128,7 +128,10 @@ pub fn stop() -> Result<(), String> {
 }
 
 /// 拉起一份 daemon（--quiet，常驻后台），并确认它注册上了互斥体。
-pub fn start() -> Result<(), String> {
+/// watch_manager=true 用 daemon 默认的 manager 监视（GUI 路径：面板开关与重启、
+/// 扫描恢复等，manager 本身常驻，监视成立）；false 追加 --watch-manager=0
+/// 给没有 manager 常驻的场景（见 start_standalone）。
+fn spawn_start(watch_manager: bool) -> Result<(), String> {
     let exe = daemon_path();
     if !exe.exists() {
         return Err(format!(
@@ -136,7 +139,11 @@ pub fn start() -> Result<(), String> {
             exe.display()
         ));
     }
-    proc::spawn_detached(&exe, &["--quiet"])?;
+    if watch_manager {
+        proc::spawn_detached(&exe, &["--quiet"])?;
+    } else {
+        proc::spawn_detached(&exe, &["--quiet", "--watch-manager=0"])?;
+    }
     if !wait_up(names::DAEMON_START_TIMEOUT_MS) {
         return Err(format!(
             "{} 已启动但没注册上，可能旧的实例还没退干净，或启动失败，看同目录的 hr-daemon.log",
@@ -146,11 +153,39 @@ pub fn start() -> Result<(), String> {
     Ok(())
 }
 
+/// GUI 路径的启动：daemon 带默认的 manager 监视（manager 常驻，daemon 盯着它，
+/// manager 没了就跟着退）。
+pub fn start() -> Result<(), String> {
+    spawn_start(true)
+}
+
+/// CLI 专用的独立启动（--watch-manager=0）。
+/// 现象：CLI 的 start/restart 进程发出 daemon 马上就退出，之后没人常驻；
+/// daemon 默认的 manager 监视探测不到 hr-manager，宽限 5 秒后把自己关掉——
+/// 脚本刚验证完"start 成功"，daemon 就没了，任务栏和 OSD 一起断数据。
+/// 原因：监视语义是给 GUI 常驻路径用的，CLI 场景没有 manager 可盯。
+/// 处理：CLI 的 start/restart/scan 一律走本函数显式关掉监视，daemon 才能独立常驻。
+pub fn start_standalone() -> Result<(), String> {
+    spawn_start(false)
+}
+
 /// 先让正在跑的 daemon 退出，再启动一份新的。没在跑就直接启动。
 pub fn restart() -> Result<String, String> {
     let was_running = running();
     stop()?;
     start()?;
+    Ok(if was_running {
+        "已重启 hr-daemon".to_string()
+    } else {
+        "已启动 hr-daemon".to_string()
+    })
+}
+
+/// CLI 专用的独立重启：新 daemon 带 --watch-manager=0（理由见 start_standalone）。
+pub fn restart_standalone() -> Result<String, String> {
+    let was_running = running();
+    stop()?;
+    start_standalone()?;
     Ok(if was_running {
         "已重启 hr-daemon".to_string()
     } else {

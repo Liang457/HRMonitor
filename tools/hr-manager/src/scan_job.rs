@@ -81,12 +81,16 @@ pub fn restore_pending() {
 }
 
 /// 跑一次扫描（阻塞，适合放线程里）。
+/// standalone=false（GUI 面板路径）拉回的 daemon 带默认的 manager 监视；
+/// standalone=true（CLI 扫描）用 --watch-manager=0 拉回——CLI 进程马上退出，
+/// 没人常驻，带监视的 daemon 会在宽限后被自己关掉。
 /// 失败情形（daemon 停不掉 / 扫描进程起不来 / 蓝牙适配器不可用）记在
 /// outcome.error 里；三种情形里 daemon 都会被尽力拉回原样（停过的话）。
 pub fn run_scan(
     secs: u32,
     stop: &AtomicBool,
     cancel_slot: &CancelSlot,
+    standalone: bool,
     mut on_event: impl FnMut(ScanEvent),
 ) -> ScanOutcome {
     let mut outcome = ScanOutcome {
@@ -110,7 +114,7 @@ pub fn run_scan(
         outcome.stopped_daemon = true;
 
         if stop.load(Ordering::Relaxed) {
-            restore(&mut outcome);
+            restore(&mut outcome, standalone);
             outcome.cancelled = true;
             return outcome;
         }
@@ -118,7 +122,7 @@ pub fn run_scan(
         // 断开之后手表要过一下才重新开始广播
         sleep_cancellable(stop, 2000);
         if stop.load(Ordering::Relaxed) {
-            restore(&mut outcome);
+            restore(&mut outcome, standalone);
             outcome.cancelled = true;
             return outcome;
         }
@@ -127,7 +131,7 @@ pub fn run_scan(
     // ---- 2. 起 --scan 子进程，逐行读 JSON
     let exe = ctl::daemon_path();
     if !exe.exists() {
-        restore(&mut outcome);
+        restore(&mut outcome, standalone);
         outcome.error = Some(format!("找不到 {}，先构建：cmd /c daemon\\build.cmd", exe.display()));
         return outcome;
     }
@@ -135,7 +139,7 @@ pub fn run_scan(
     let child = match proc::spawn_child(&exe, &args) {
         Ok(c) => c,
         Err(e) => {
-            restore(&mut outcome);
+            restore(&mut outcome, standalone);
             outcome.error = Some(e);
             return outcome;
         }
@@ -176,12 +180,12 @@ pub fn run_scan(
     *cancel_slot.lock().unwrap() = None;
 
     if stop.load(Ordering::Relaxed) {
-        restore(&mut outcome);
+        restore(&mut outcome, standalone);
         outcome.cancelled = true;
         return outcome;
     }
     if code != 0 {
-        restore(&mut outcome);
+        restore(&mut outcome, standalone);
         outcome.error = Some("扫描起不来（蓝牙适配器关了吗？原因见 hr-daemon.log）".into());
         return outcome;
     }
@@ -190,9 +194,10 @@ pub fn run_scan(
     outcome
 }
 
-fn restore(outcome: &mut ScanOutcome) {
+fn restore(outcome: &mut ScanOutcome, standalone: bool) {
     if outcome.stopped_daemon && !outcome.daemon_restored {
-        if ctl::start().is_ok() {
+        let r = if standalone { ctl::start_standalone() } else { ctl::start() };
+        if r.is_ok() {
             outcome.daemon_restored = true;
             clear_marker();
         }
@@ -229,6 +234,8 @@ fn parse_line(line: &str) -> Option<Parsed> {
 }
 
 /// CLI 扫描：events 打到控制台，扫完把 daemon 拉回原样。
+/// 拉回一律用独立模式（--watch-manager=0）：CLI 进程马上退出，daemon 必须
+/// 能独立常驻，否则宽限一到它就自己退了（详见 daemon_ctl::start_standalone）。
 pub fn run_scan_cli(secs: u32) -> i32 {
     use std::io::Write as _;
     use std::sync::atomic::AtomicBool;
@@ -237,7 +244,7 @@ pub fn run_scan_cli(secs: u32) -> i32 {
     let stop = AtomicBool::new(false);
     let cancel_slot: CancelSlot = Mutex::new(None);
     let mut devices: Vec<(String, String)> = Vec::new();
-    let out = run_scan(secs, &stop, &cancel_slot, |ev| match ev {
+    let out = run_scan(secs, &stop, &cancel_slot, true, |ev| match ev {
         ScanEvent::Stopping => {
             print!("hr-daemon 正在运行，先停掉它（手表连着时不广播）...");
             let _ = std::io::stdout().flush();
@@ -264,7 +271,7 @@ pub fn run_scan_cli(secs: u32) -> i32 {
     }
     println!("扫描完成：{} 台设备。", out.count);
     if out.stopped_daemon && !out.daemon_restored {
-        match ctl::start() {
+        match ctl::start_standalone() {
             Ok(()) => {
                 println!("已把 hr-daemon 按原配置拉起来。");
                 clear_marker();

@@ -88,7 +88,11 @@ fn usage() {
   hr-manager restart             # 改完重启 daemon 生效
   hr-manager scan 10             # 扫 10 秒看看手表在不在广播
 
-保存配置会先备份 <ini>.bak 再原子替换；写入中途不会留下半份配置。"#
+保存配置会先备份 <ini>.bak 再原子替换；写入中途不会留下半份配置。
+
+daemon 生命周期: CLI 拉起的 daemon 不监视 hr-manager（--watch-manager=0），
+  没有 manager 常驻也能自己活着；面板开关拉起的默认监视，manager 一退它跟着退。
+  纯插件用户（没有 hr-manager）请用 CLI 的 start/restart，daemon 才会常驻。"#
     );
 }
 
@@ -274,7 +278,9 @@ fn cmd_version() -> i32 {
 }
 
 fn cmd_restart() -> i32 {
-    match ctl::restart() {
+    // CLI 进程发出 daemon 就退出，没人常驻当"manager"：daemon 必须独立模式
+    // 启动（--watch-manager=0），否则宽限一过它自己就退了（见 daemon_ctl）
+    match ctl::restart_standalone() {
         Ok(msg) => {
             println!("{}：{}", msg, ctl::daemon_path().display());
             0
@@ -291,7 +297,8 @@ fn cmd_start() -> i32 {
         println!("hr-daemon 已经在运行");
         return 0;
     }
-    match ctl::start() {
+    // 同 cmd_restart：CLI 拉起的 daemon 用独立模式，不监视 hr-manager
+    match ctl::start_standalone() {
         Ok(()) => {
             println!("已启动 hr-daemon：{}", ctl::daemon_path().display());
             0

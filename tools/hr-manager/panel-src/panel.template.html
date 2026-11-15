@@ -1,0 +1,248 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>BLE 心率</title>
+<!-- __THEME__ -->
+<style>
+  /* ---- 应用级样式（布局、卡片、列表、toast 位置）；组件外观交给 @material/web ---- */
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--md-sys-color-background); color: var(--md-sys-color-on-background);
+    font: 14px/1.55 "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+    padding: 20px 24px 32px;
+  }
+  ::-webkit-scrollbar { width: 10px; }
+  ::-webkit-scrollbar-thumb { background: var(--md-sys-color-surface-container-highest); border-radius: 5px; }
+  ::-webkit-scrollbar-thumb:hover { background: var(--md-sys-color-outline-variant); }
+  :focus-visible { outline: 2px solid var(--md-sys-color-primary); outline-offset: 2px; }
+  /* 自定义元素未升级完成前先藏住，避免无样式闪一下 */
+  md-tabs:not(:defined), md-switch:not(:defined), md-filled-text-field:not(:defined),
+  md-dialog:not(:defined), md-linear-progress:not(:defined),
+  md-filled-button:not(:defined), md-filled-tonal-button:not(:defined),
+  md-outlined-button:not(:defined), md-text-button:not(:defined) { visibility: hidden; }
+  /* lit 组件升级后 :host 的 display 会压过 UA 的 [hidden] 规则，取消、放弃按钮和
+     进度条的 hidden 属性会失效；文档级规则把它们救回来 */
+  md-filled-button[hidden], md-filled-tonal-button[hidden], md-outlined-button[hidden],
+  md-text-button[hidden], md-switch[hidden], md-linear-progress[hidden] { display: none; }
+
+  .wrap { max-width: 820px; margin: 0 auto; }
+
+  header { display: flex; align-items: center; gap: 12px; margin: 4px 4px 16px; }
+  header .heart { width: 26px; height: 26px; fill: var(--md-sys-color-primary); flex: none; }
+  header h1 { font-size: 22px; margin: 0; font-weight: 600; letter-spacing: 0; flex: 1; }
+  header .dlabel { color: var(--md-sys-color-on-surface-variant); font-size: 13px; font-weight: 600; white-space: nowrap; }
+
+  .chip {
+    font-size: 12.5px; font-weight: 500; height: 30px; padding: 0 14px;
+    display: inline-flex; align-items: center; border-radius: 8px;
+    border: 1px solid var(--md-sys-color-outline-variant); color: var(--md-sys-color-on-surface-variant);
+    white-space: nowrap; background: var(--md-sys-color-surface-container-low);
+  }
+  .chip.on { color: var(--ok); border-color: rgb(126 204 154 / .45); background: transparent; }
+  .chip.warn { color: var(--warn); border-color: rgb(231 192 142 / .45); background: transparent; }
+
+  /* MD3 elevated card：container-low 底 + 海拔 1 */
+  .card {
+    background: var(--md-sys-color-surface-container-low); border-radius: 12px;
+    padding: 16px; margin-bottom: 14px; box-shadow: var(--elev-1);
+  }
+  .card h2 { margin: 0; font-size: 15px; color: var(--md-sys-color-on-surface); font-weight: 600; line-height: 1.4; }
+  /* cardhead：标题居左，右侧放 md-text-button 动作 */
+  .cardhead { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; }
+  .cardhead h2 { flex: 1; }
+
+  /* 状态卡：大数字在上，状态行在下 */
+  .bpm {
+    font-size: 58px; font-weight: 600; font-variant-numeric: tabular-nums;
+    line-height: 1.05; letter-spacing: -.5px; color: var(--md-sys-color-on-surface-variant);
+  }
+  .bpm.live { color: var(--md-sys-color-primary); }
+  .bpm small { font-size: 16px; font-weight: 500; margin-left: 6px; letter-spacing: 0; }
+  .stext { color: var(--md-sys-color-on-surface-variant); font-size: 13px; margin-top: 4px; }
+  .stext b { color: var(--md-sys-color-on-surface); font-weight: 600; }
+
+  .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+
+  .err { color: var(--md-sys-color-error); font-size: 12px; }
+
+  /* 扫描 */
+  .hint { color: var(--md-sys-color-on-surface-variant); font-size: 12.5px; margin: 0 0 12px; }
+  .hint b { color: var(--md-sys-color-on-surface); font-weight: 600; }
+  .slist { margin-top: 12px; display: flex; flex-direction: column; gap: 6px; }
+  .dev {
+    display: flex; gap: 10px; align-items: center; cursor: pointer;
+    background: var(--md-sys-color-surface-container-high); border-radius: 24px; padding: 11px 18px;
+  }
+  .dev:hover { background-image: linear-gradient(rgb(255 218 219 / .06), rgb(255 218 219 / .06)); }
+  .dev .mac { font-family: Consolas, monospace; font-size: 12.5px; }
+  .dev .nm { color: var(--md-sys-color-on-surface-variant); font-size: 12.5px; flex: 1; }
+  .dev.cur { background: var(--md-sys-color-primary-container); }
+  .dev.cur .mac, .dev.cur .nm, .dev.cur .tag { color: var(--md-sys-color-on-primary-container); }
+  .dev.cur .mac { font-weight: 600; }
+  .dev.cur .tag { font-size: 11px; }
+  .sstatus { color: var(--warn); font-size: 12.5px; min-height: 18px; margin-top: 10px; }
+  md-linear-progress { margin-top: 12px; width: 100%; }
+
+  /* 表单行 */
+  .f { margin-bottom: 14px; }
+  .f.bool { display: flex; justify-content: space-between; align-items: center; gap: 16px; margin-bottom: 14px; }
+  .f.bool .fl { flex: 1; }
+  .fl .t { font-size: 14px; color: var(--md-sys-color-on-surface); }
+  .fl .s { font-size: 12px; color: var(--md-sys-color-on-surface-variant); margin-top: 1px; }
+  .fsub { font-size: 12px; color: var(--md-sys-color-on-surface-variant); margin-top: 4px; padding: 0 4px; }
+  md-filled-text-field { width: 100%; }
+
+  /* 提示横幅：tertiary container 当警示容器用 */
+  .banner {
+    background: var(--md-sys-color-tertiary-container); color: var(--md-sys-color-on-tertiary-container);
+    border-radius: 12px; padding: 12px 16px; font-size: 12.5px; margin-bottom: 14px;
+  }
+  .banner b { font-weight: 600; }
+  footer { color: var(--md-sys-color-outline); font-size: 11px; text-align: center; margin-top: 8px; word-break: break-all; line-height: 1.7; }
+
+  /* 第三方接入：每宿主一块 container 底圆角块 */
+  .integ { background: var(--md-sys-color-surface-container); border-radius: 12px; padding: 16px; margin-top: 12px; }
+  .integ:first-child { margin-top: 14px; }
+  .integ-head { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+  .integ-name { font-size: 15px; font-weight: 600; flex: 1; }
+  .steps { margin: 0; padding-left: 20px; color: var(--md-sys-color-on-surface-variant); font-size: 12.5px; }
+  .steps li { margin: 3px 0; padding-left: 2px; }
+  .steps li::marker { color: var(--md-sys-color-primary); font-weight: 600; }
+  .integ md-filled-text-field { margin-top: 14px; }
+  .integ .row { margin-top: 12px; }
+  .integ .note { color: var(--md-sys-color-outline); font-size: 11.5px; margin: 12px 0 0; padding-top: 10px; border-top: 1px solid var(--md-sys-color-outline-variant); }
+
+  /* 标签页与正文 */
+  md-tabs { width: 100%; margin: 4px 0 16px; }
+  .tabpanel[hidden] { display: none; }
+
+  /* MD3 snackbar：inverse surface，海拔 3；左下角、限宽 360px、向上堆叠 */
+  #toasts { position: fixed; left: 16px; bottom: 16px; display: flex; flex-direction: column; gap: 8px; z-index: 9; width: 360px; max-width: calc(100vw - 32px); }
+  .toast {
+    background: var(--md-sys-color-inverse-surface); color: var(--md-sys-color-inverse-on-surface);
+    border-radius: 4px; padding: 12px 16px; font-size: 13.5px; box-shadow: var(--elev-3);
+  }
+
+  /* 复用确认对话框 */
+  #confirmText { white-space: pre-line; }
+  /* 恢复默认按钮：MD3 error 配色的 outlined button */
+  #btnReset {
+    --md-outlined-button-label-text-color: var(--md-sys-color-error);
+    --md-outlined-button-hover-label-text-color: var(--md-sys-color-error);
+    --md-outlined-button-pressed-label-text-color: var(--md-sys-color-error);
+    --md-outlined-button-focus-label-text-color: var(--md-sys-color-error);
+    --md-outlined-button-outline-color: var(--md-sys-color-outline);
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <svg class="heart" viewBox="0 0 32 32"><path d="M16 29C9 23 2 17.5 2 10.8 2 6 5.6 3 9.6 3c2.6 0 5 1.3 6.4 3.6C17.4 4.3 19.8 3 22.4 3 26.4 3 30 6 30 10.8c0 6.7-7 12.2-14 18.2z"/></svg>
+    <h1>BLE 心率</h1>
+    <span class="chip" id="daemonBadge">检测 daemon…</span>
+    <span class="dlabel">hr-daemon</span>
+    <md-switch id="daemonSwitch" aria-label="启动或停止 hr-daemon"></md-switch>
+  </header>
+
+  <md-tabs id="tabs">
+    <md-primary-tab>心率与连接</md-primary-tab>
+    <md-primary-tab>配置</md-primary-tab>
+    <md-primary-tab>插件</md-primary-tab>
+  </md-tabs>
+
+  <!-- 标签页一：心率与连接 -->
+  <section class="tabpanel" id="tabHeart">
+    <div class="banner" id="daemonBanner" hidden>
+      hr-daemon 未运行。用右上角开关启动；本程序不再自动启动 daemon。
+    </div>
+
+    <!-- 实时状态 -->
+    <div class="card">
+      <div class="cardhead">
+        <h2>实时状态</h2>
+        <md-text-button id="btnRestart">重启</md-text-button>
+        <md-text-button id="btnLogs">打开日志</md-text-button>
+      </div>
+      <div class="bpm" id="bpm">--</div>
+      <div class="stext" id="stext">正在连接管理器…</div>
+    </div>
+
+    <!-- 选表扫描 -->
+    <div class="card" id="scanCard">
+      <div class="cardhead"><h2>选择手表</h2></div>
+      <div class="hint">
+        手表打开<b>心率广播</b>页面并保持亮屏。扫描会先停止 daemon，选定手表后自动恢复。
+      </div>
+      <div class="row">
+        <md-filled-button id="btnScan">扫描 10 秒</md-filled-button>
+        <md-text-button id="btnScanCancel" hidden>取消</md-text-button>
+        <md-text-button id="btnScanDiscard" hidden>放弃选择</md-text-button>
+      </div>
+      <md-linear-progress id="scanProgress" indeterminate hidden></md-linear-progress>
+      <div class="sstatus" id="scanStatus"></div>
+      <div class="slist" id="scanList"></div>
+    </div>
+  </section>
+
+  <!-- 标签页二：配置 -->
+  <section class="tabpanel" id="tabConfig" hidden>
+    <div class="card">
+      <div class="cardhead"><h2>配置</h2></div>
+      <div id="fields"></div>
+      <div class="err" id="formErr" style="margin-top:4px"></div>
+      <div class="row" style="margin-top:14px">
+        <md-filled-tonal-button id="btnSave">保存</md-filled-tonal-button>
+        <md-filled-button id="btnSaveRestart">保存并重启 daemon</md-filled-button>
+        <md-outlined-button id="btnReset">恢复默认</md-outlined-button>
+      </div>
+    </div>
+
+    <!-- 高级 -->
+    <div class="card">
+      <div class="cardhead"><h2>高级</h2></div>
+      <div class="banner" id="oldTaskBanner" hidden>
+        检测到旧版计划任务 HuaweiHRDaemon，开机时会直接启动 daemon。
+        运行 <b>scripts\uninstall-task.ps1</b> 删除它，改用开机自启。
+      </div>
+      <div class="f bool" style="margin-bottom:0">
+        <div class="fl">
+          <div class="t">开机自启</div>
+          <div class="s">登录后只在托盘运行，不弹面板</div>
+        </div>
+        <md-switch id="chkAutostart" aria-label="开机自启"></md-switch>
+      </div>
+    </div>
+  </section>
+
+  <!-- 标签页三：插件 -->
+  <section class="tabpanel" id="tabPlugins" hidden>
+    <div class="card">
+      <div class="cardhead">
+        <h2>第三方程序接入</h2>
+        <md-text-button id="btnOpenPlugins">打开 plugins 目录</md-text-button>
+      </div>
+      <div class="hint">插件在本程序的 plugins 目录，复制 DLL 到宿主的插件目录后重启宿主。</div>
+      <div id="integrations"></div>
+    </div>
+  </section>
+
+  <footer id="paths">hr-manager</footer>
+</div>
+
+<div id="toasts"></div>
+
+<md-dialog id="confirmDialog">
+  <div slot="headline">确认操作</div>
+  <div slot="content" id="confirmText"></div>
+  <div slot="actions">
+    <md-text-button id="confirmCancel">取消</md-text-button>
+    <md-filled-button id="confirmOk">确认</md-filled-button>
+  </div>
+</md-dialog>
+
+<!-- __BUNDLE__ -->
+</body>
+</html>

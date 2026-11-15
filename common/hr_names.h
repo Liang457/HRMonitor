@@ -11,3 +11,8 @@
 // hr-daemon 的隐藏窗口类名：manager 靠 FindWindowW 找到它再发 WM_CLOSE，
 // 让 daemon 走正常退出路径（关共享内存映射、收 BLE 线程）
 #define HR_WNDCLASS_DAEMON L"BleHRDaemonWnd"
+
+// hr-manager 的单实例互斥体：daemon 用它探测 manager 是否存活（manager 监视，
+// 见 daemon/main.cpp 的 --watch-manager）。互斥体由 manager 整个生命周期握着，
+// OpenMutexW 打开 = manager 在跑
+#define HR_MUTEX_MANAGER L"Local\\BleHR_manager"

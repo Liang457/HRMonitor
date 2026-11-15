@@ -78,11 +78,21 @@ pub fn dispatch(core: &Arc<Core>, body: &str) {
         "restart_daemon" | "start_daemon" | "stop_daemon" => {
             let core2 = core.clone();
             std::thread::spawn(move || {
+                // 主动停/启/重启：先立"过渡中"标志，状态轮询线程看到
+                // running→stopped 跳变时不会当异常退出报警
+                core2.daemon_stop_expected.store(true, Ordering::SeqCst);
                 let result = match cmd.as_str() {
                     "restart_daemon" => ctl::restart().map(|m| json!({ "ok": true, "message": m })),
                     "start_daemon" => ctl::start().map(|_| json!({ "ok": true, "message": "已启动 hr-daemon" })),
                     _ => ctl::stop().map(|_| json!({ "ok": true, "message": "已停止 hr-daemon" })),
                 };
+                // daemon 恢复运行（start/restart 的 Ok）才清标志；stop 的 Ok 是按
+                // 计划停下，不清，留给状态轮询的跳变检测 swap 消费一次。
+                // 失败路径留着 true：这次"消失"本来就该豁免（错误已 toast 回面板），
+                // 消费后不影响后续真异常的报警
+                if result.is_ok() && ctl::running() {
+                    core2.daemon_stop_expected.store(false, Ordering::SeqCst);
+                }
                 match result {
                     Ok(p) => core2.reply(id, p),
                     Err(e) => {
@@ -102,7 +112,8 @@ pub fn dispatch(core: &Arc<Core>, body: &str) {
             let core2 = core.clone();
             std::thread::spawn(move || {
                 core2.scan_stop.store(false, Ordering::SeqCst);
-                let out = scan_job::run_scan(secs, &core2.scan_stop, &core2.scan_cancel, |ev| {
+                // standalone=false：面板路径拉回的 daemon 带默认 manager 监视
+                let out = scan_job::run_scan(secs, &core2.scan_stop, &core2.scan_cancel, false, |ev| {
                     let payload = match ev {
                         scan_job::ScanEvent::Stopping => json!({ "type": "stopping" }),
                         scan_job::ScanEvent::Waiting => json!({ "type": "waiting" }),
@@ -176,6 +187,9 @@ pub fn dispatch(core: &Arc<Core>, body: &str) {
             let mac = arg("mac").as_str().unwrap_or("").to_string();
             let core2 = core.clone();
             std::thread::spawn(move || {
+                // 保存地址必然重启 daemon：先立"过渡中"标志，别让重启的停顿
+                // 被状态轮询当成异常退出报了警
+                core2.daemon_stop_expected.store(true, Ordering::SeqCst);
                 // 选表即扫描终止：计时没到就点了设备时扫描还在跑，不取消的话
                 // 扫描线程稍后照常吐 done，面板会冒出过期的"扫描完成"和放弃按钮，
                 // 还会把粘滞标志置回去。取消后扫描线程走取消路径收尾，和这里的
@@ -204,6 +218,7 @@ pub fn dispatch(core: &Arc<Core>, body: &str) {
                 match result {
                     // 重启成功 = daemon 已经在跑，扫描留下的"欠恢复"一笔勾销
                     Ok((msg, note)) => {
+                        core2.daemon_stop_expected.store(false, Ordering::SeqCst);
                         core2.scan_needs_restore.store(false, Ordering::SeqCst);
                         scan_job::clear_marker();
                         core2.reply(id, json!({ "ok": true, "message": format!("{} 已保存并重启 hr-daemon{}", msg, note) }))

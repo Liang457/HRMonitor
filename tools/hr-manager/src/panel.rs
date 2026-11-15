@@ -4,6 +4,10 @@
 // 进程（msedgewebview2.exe）随 drop 全部退出，内存立刻回落；托盘进程本身
 // 只有几 MB。再点托盘"打开面板"时重建。
 //
+// 页面（assets/index.html）由 tools/hr-manager/panel-src 构建：@material/web
+// 官方组件 + esbuild 打包内联的单文件，不入库、不手工编辑，改前端去 panel-src
+// 改源码再 node build.mjs。
+//
 // 字段顺序即 drop 顺序：webview 先于 window 释放，先停掉页面再拆窗口。
 use crate::ipc;
 use crate::state::Core;
@@ -20,10 +24,12 @@ pub fn open(
     core: &Arc<Core>,
     target: &tao::event_loop::EventLoopWindowTarget<crate::state::UserEvent>,
 ) -> Result<Panel, String> {
+    // 桌面化排版（对齐 adbaudio）：820×660，最小 760×560，三标签页在 820px
+    // 正文宽度里排开
     let window = tao::window::WindowBuilder::new()
         .with_title("BLE 心率")
-        .with_inner_size(tao::dpi::LogicalSize::new(500.0f64, 760.0f64))
-        .with_min_inner_size(tao::dpi::LogicalSize::new(420.0f64, 560.0f64))
+        .with_inner_size(tao::dpi::LogicalSize::new(820.0f64, 660.0f64))
+        .with_min_inner_size(tao::dpi::LogicalSize::new(760.0f64, 560.0f64))
         .build(target)
         .map_err(|e| format!("创建窗口失败：{}", e))?;
     // 深色标题栏：面板是深色主题，白标题栏非常突兀。DWMWA_USE_IMMERSIVE_DARK_MODE，

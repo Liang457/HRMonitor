@@ -21,7 +21,9 @@ pub const DAEMON_STOP_TIMEOUT_MS: u32 = 20_000;
 /// 等新 daemon 注册上互斥体（= 真跑起来了）的上限
 pub const DAEMON_START_TIMEOUT_MS: u32 = 8_000;
 
-/// hr-manager 自己的单实例互斥体：第二个实例把"打开面板"事件发给第一个就退出
+/// hr-manager 自己的单实例互斥体：第二个实例把"打开面板"事件发给第一个就退出。
+/// C++ daemon 侧同名常量见 common/hr_names.h（HR_MUTEX_MANAGER），
+/// 用于 manager 监视（--watch-manager）：daemon 探测不到它就按宽限自行退出
 pub const MANAGER_MUTEX: &str = "Local\\BleHR_manager";
 /// 手动事件：第二个实例 SetEvent 一下，第一个实例收到就打开面板
 pub const MANAGER_OPEN_EVENT: &str = "Local\\BleHR_manager_open";

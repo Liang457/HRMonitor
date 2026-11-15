@@ -43,6 +43,23 @@ jobs:
         shell: cmd
         run: chcp 65001 >nul && tm-plugin\build.cmd
 
+      # 面板（tools/hr-manager/src/assets/index.html）是 panel-src 的构建产物，
+      # 不入库，hr-manager 的 cargo build 用 include_str! 吃它，必须先构建出来；
+      # npm ci 按 package-lock.json 精确安装。产物缺失时 cargo 编译自然失败，
+      # 这里不额外校验
+      - name: 安装 Node（面板构建用）
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22
+
+      - name: 构建面板（panel-src → src/assets/index.html）
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Set-Location tools/hr-manager/panel-src
+          npm ci
+          node build.mjs
+
       - name: 构建 hr-manager（Rust + WebView2 GUI）
         shell: cmd
         run: chcp 65001 >nul && tools\hr-manager\build.cmd

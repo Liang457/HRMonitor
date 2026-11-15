@@ -1,0 +1,51 @@
+/* Material Design 3 dark scheme（Material Theme Builder 导出，css/dark.css 原样收录）。
+   build.mjs 把本文件整体内联进产物 index.html 的 <style>，覆盖 --md-sys-color-* 
+   全套调色板：@material/web 官方组件的每个 token 都回退到 --md-sys-color-*，
+   所以只改这一处就能给所有组件换主题。 */
+:root {
+  --md-sys-color-primary: rgb(255 178 183);
+  --md-sys-color-surface-tint: rgb(255 178 183);
+  --md-sys-color-on-primary: rgb(86 29 36);
+  --md-sys-color-primary-container: rgb(114 51 57);
+  --md-sys-color-on-primary-container: rgb(255 218 219);
+  --md-sys-color-secondary: rgb(230 189 190);
+  --md-sys-color-on-secondary: rgb(68 41 43);
+  --md-sys-color-secondary-container: rgb(92 63 65);
+  --md-sys-color-on-secondary-container: rgb(255 218 219);
+  --md-sys-color-tertiary: rgb(231 192 142);
+  --md-sys-color-on-tertiary: rgb(67 44 6);
+  --md-sys-color-tertiary-container: rgb(92 66 26);
+  --md-sys-color-on-tertiary-container: rgb(255 221 179);
+  --md-sys-color-error: rgb(255 180 171);
+  --md-sys-color-on-error: rgb(105 0 5);
+  --md-sys-color-error-container: rgb(147 0 10);
+  --md-sys-color-on-error-container: rgb(255 218 214);
+  --md-sys-color-background: rgb(26 17 18);
+  --md-sys-color-on-background: rgb(240 222 222);
+  --md-sys-color-surface: rgb(26 17 18);
+  --md-sys-color-on-surface: rgb(240 222 222);
+  --md-sys-color-surface-variant: rgb(82 67 68);
+  --md-sys-color-on-surface-variant: rgb(215 193 194);
+  --md-sys-color-outline: rgb(159 140 141);
+  --md-sys-color-outline-variant: rgb(82 67 68);
+  --md-sys-color-shadow: rgb(0 0 0);
+  --md-sys-color-scrim: rgb(0 0 0);
+  --md-sys-color-inverse-surface: rgb(240 222 222);
+  --md-sys-color-inverse-on-surface: rgb(56 46 46);
+  --md-sys-color-inverse-primary: rgb(143 74 79);
+  --md-sys-color-surface-dim: rgb(26 17 18);
+  --md-sys-color-surface-bright: rgb(65 55 55);
+  --md-sys-color-surface-container-lowest: rgb(20 12 12);
+  --md-sys-color-surface-container-low: rgb(34 25 26);
+  --md-sys-color-surface-container: rgb(39 29 30);
+  --md-sys-color-surface-container-high: rgb(50 40 40);
+  --md-sys-color-surface-container-highest: rgb(61 50 50);
+  /* 面板自用语义色（MD3 无 success 角色，按暖色底手配） */
+  --ok: rgb(126 204 154);
+  --warn: rgb(231 192 142);
+  /* MD3 海拔 */
+  --elev-1: 0 1px 2px rgb(0 0 0 / .3), 0 1px 3px 1px rgb(0 0 0 / .15);
+  --elev-2: 0 1px 2px rgb(0 0 0 / .3), 0 2px 6px 2px rgb(0 0 0 / .15);
+  --elev-3: 0 1px 3px rgb(0 0 0 / .3), 0 4px 8px 3px rgb(0 0 0 / .15);
+  color-scheme: dark;
+}

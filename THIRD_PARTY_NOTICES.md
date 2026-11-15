@@ -49,6 +49,15 @@ Afterburner 的游戏内 OSD 本身就是 RTSS 渲染的（Afterburner 自己不
 文本交给 RTSS，由 RTSS 去 hook 3D 程序），所以 RTSS 仍然作为渲染器装在机器上，但本项目
 与它不再有耦合：不写它的共享内存、不引用它的头文件。
 
+## 面板构建链（`tools/hr-manager/panel-src/`）—— 构建期工具，不进产物运行时
+
+- **@material/web**：Google Material Design 官方 Web 组件（面板的 md-tabs/开关/按钮/
+  输入框/进度条/对话框都用它），Apache License 2.0。源码经 esbuild 打包内联进
+  `src/assets/index.html` 单文件，组件本体随产物分发，许可声明在仓库这一页留档即可
+  （Apache-2.0 不要求随二进制附带源码）。
+- **esbuild**：前端打包压缩工具，MIT License，只在开发/CI 构建面板时运行，不随产物分发。
+- 版本由 `tools/hr-manager/panel-src/package-lock.json` 锁定。
+
 ## 其他依赖
 
 本仓库的代码只用系统自带的东西：
@@ -58,5 +67,5 @@ Afterburner 的游戏内 OSD 本身就是 RTSS 渲染的（Afterburner 自己不
 | `hr-daemon.exe` | Windows SDK 的 C++/WinRT 头 + `windowsapp.lib`（BLE）；只写中立共享内存 |
 | `afterburner_hr_plugin.dll`（Afterburner 插件） | 仅 `kernel32`（`/MT` 静态 CRT）。实测 `dumpbin /dependents` 只有 KERNEL32.dll |
 | `trafficmonitor_hr_plugin.dll`（TrafficMonitor 插件） | 仅 `kernel32`（`/MT` 静态 CRT） |
-| `hr-manager.exe` | GUI 栈用第三方 crate：`wry`（WebView2 绑定）+ `tao` + `tray-icon` + `serde`/`serde_json`，均 MIT/Apache-2.0 双许可，版本由 `tools/hr-manager/Cargo.lock` 锁定；其余部分（配置/进程/注册表/共享内存）只用 Rust 标准库 + 手写 `extern "system"` 声明 |
+| `hr-manager.exe` | GUI 栈用第三方 crate：`wry`（WebView2 绑定）+ `tao` + `tray-icon` + `serde`/`serde_json`，均 MIT/Apache-2.0 双许可，版本由 `tools/hr-manager/Cargo.lock` 锁定；面板 UI 组件来自 @material/web（见上节）；其余部分（配置/进程/注册表/共享内存）只用 Rust 标准库 + 手写 `extern "system"` 声明 |
 | `osd_test.exe` | 系统自带的 `d3d11` / `dxgi`（D3D11 画布，用来验证 OSD） |

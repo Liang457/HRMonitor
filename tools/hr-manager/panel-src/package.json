@@ -1,0 +1,12 @@
+{
+  "name": "hrmonitor-panel",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node build.mjs"
+  },
+  "dependencies": {
+    "@material/web": "^2.0.0",
+    "esbuild": "^0.25.0"
+  }
+}
