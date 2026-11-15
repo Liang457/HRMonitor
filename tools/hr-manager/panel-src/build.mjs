@@ -7,7 +7,7 @@
 // panel.rs 用 include_str! 吃这个文件，WebView2 走 NavigateToString（上限 2MB，
 // 产物控制在 1.5MB 以内留余量），产物由 .gitignore 排除、不入库不手工编辑。
 import { build } from "esbuild";
-import { readFileSync, writeFileSync, statSync } from "node:fs";
+import { readFileSync, writeFileSync, statSync, mkdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 
@@ -51,6 +51,9 @@ if (problems.length > 0) {
 }
 
 const out = path.join(here, "..", "src", "assets", "index.html");
+// 产物目录不入库（里面只有这一个被 .gitignore 排除的产物），新 checkout 里
+// 不存在，先建出来再写，否则 CI 上直接 ENOENT
+mkdirSync(path.dirname(out), { recursive: true });
 writeFileSync(out, html);
 const size = statSync(out).size;
 if (size >= 1572864) {
