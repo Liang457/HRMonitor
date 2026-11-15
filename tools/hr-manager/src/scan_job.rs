@@ -7,16 +7,26 @@
 //                             或放弃（点"放弃"时由调用方拉回）
 // 设备列表由调用方按 mac 去重、后到的名字覆盖前面的（广播里名字可能后到）。
 //
+// 广播里往往不带设备名，识别靠逐台探测：扫描读流线程发现新 mac 就入队
+// （mpsc），探测线程串行拉起 `hr-daemon --probe-address` 子进程取真名和第一拍
+// 心率，事件照常推给面板回填。扫描读完后不急着报 Done，等识别队列排空才发
+// ——面板在「识别设备中」阶段保持扫描进行态。
+//
 // 取消路径：调用方（GUI 主线程）把 stop 置位并 kill 子进程（句柄经 cancel_slot
-// 交给调用方）。扫描线程正阻塞在读管道上，只置位不 kill 是叫不醒它的。
+// / probe_cancel 交给调用方，scan_job::cancel_scan 两个坑位一起杀）。扫描线程
+// 和探测线程都阻塞在读管道上，只置位不 kill 是叫不醒它们的。
 use crate::daemon_ctl as ctl;
 use crate::proc;
+use crate::state::Core;
 use serde_json::Value;
+use std::collections::HashSet;
 use std::io::BufRead;
+use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Mutex;
+use std::sync::mpsc;
+use std::sync::{Arc, Mutex};
 
-/// 取消用的坑位：扫描期间放着可 kill 的子进程句柄，其他时候是 None
+/// 取消用的坑位：扫描/探测期间放着可 kill 的子进程句柄，其他时候是 None
 pub type CancelSlot = Mutex<Option<proc::CancelHandle>>;
 
 #[derive(Clone, Debug)]
@@ -27,6 +37,10 @@ pub enum ScanEvent {
     Waiting,
     /// 发现设备（或某台的名字补全了，调用方按 mac 覆盖）
     Device { mac: String, name: String },
+    /// 单台识别：name 非空 = 真设备名；bpm>=0 = 读到实时心率（-1 = 尚未读到）
+    Probe { mac: String, name: String, bpm: i32 },
+    /// 单台识别收尾（含失败；此后这台不会再有 Probe 事件）
+    ProbeDone { mac: String },
     /// 扫描自然结束，找到 count 台
     Done { count: usize },
 }
@@ -84,12 +98,15 @@ pub fn restore_pending() {
 /// standalone=false（GUI 面板路径）拉回的 daemon 带默认的 manager 监视；
 /// standalone=true（CLI 扫描）用 --watch-manager=0 拉回——CLI 进程马上退出，
 /// 没人常驻，带监视的 daemon 会在宽限后被自己关掉。
-/// 失败情形（daemon 停不掉 / 扫描进程起不来 / 蓝牙适配器不可用）记在
-/// outcome.error 里；三种情形里 daemon 都会被尽力拉回原样（停过的话）。
+/// probe_cancel 是逐台探测子进程的取消坑位，与 cancel_slot 一起由
+/// cancel_scan 强杀。失败情形（daemon 停不掉 / 扫描进程起不来 / 蓝牙适配器
+/// 不可用）记在 outcome.error 里；三种情形里 daemon 都会被尽力拉回原样
+/// （停过的话）。
 pub fn run_scan(
     secs: u32,
     stop: &AtomicBool,
     cancel_slot: &CancelSlot,
+    probe_cancel: &CancelSlot,
     standalone: bool,
     mut on_event: impl FnMut(ScanEvent),
 ) -> ScanOutcome {
@@ -144,41 +161,102 @@ pub fn run_scan(
             return outcome;
         }
     };
-    let mut child = child;
     *cancel_slot.lock().unwrap() = Some(proc::CancelHandle::from_process(child.process));
-
-    let stdout = child.stdout.take().expect("spawn_child 一定带 stdout");
-    let mut reader = std::io::BufReader::new(stdout);
-    loop {
-        let mut line = Vec::new();
-        match reader.read_until(b'\n', &mut line) {
-            Ok(0) => break,   // EOF：子进程结束（或被取消 kill 掉）
-            Ok(_) => {}
-            Err(_) => break,
-        }
-        if stop.load(Ordering::Relaxed) {
-            child.kill();
-            continue; // 管道很快会 EOF，走下面统一的取消收尾
-        }
-        let text = String::from_utf8_lossy(&line);
-        for part in text.split('\n') {
-            let part = part.trim();
-            if part.is_empty() {
-                continue;
-            }
-            match parse_line(part) {
-                Some(Parsed::Device { mac, name }) => {
-                    on_event(ScanEvent::Device { mac, name });
-                }
-                Some(Parsed::Done { count }) => outcome.count = count,
-                None => {} // 解析不了的行（版本差异）直接忽略
-            }
-        }
+    if stop.load(Ordering::Relaxed) {
+        // 取消刚好赶在坑位写入前：补一刀，让读流线程马上 EOF
+        child.kill();
     }
+    let mut child = child;
 
+    // ---- 3. 双线程编排：扫描读流 + 逐台探测，事件经 mpsc 汇到本线程统一
+    // on_event。两个通道：
+    //   req：读流线程 → 探测线程。每发现一台新 mac 入队一次；已知 mac 的名字
+    //        补全不重复入队（探测同一台只会白占串行队列，真名随首台回来）。
+    //   ev ：两个线程 → 本线程。本线程不留发送端，ev 通道全关（recv Err）=
+    //        两个线程都收尾——正常 EOF 与取消 kill 都走这里，阻塞 recv 天然被
+    //        叫醒，不需要轮询。
+    // 用 thread::scope 让两个工作线程借用 stop / probe_cancel 等局部引用，
+    // 作用域结束时自动 join；Child 留在本线程，wait/清坑位在收尾段做。
+    let (req_tx, req_rx) = mpsc::channel::<String>();
+    let (ev_tx, ev_rx) = mpsc::channel::<ScanEvent>();
+
+    let mut held_done: Option<ScanEvent> = None;
+    std::thread::scope(|scope| {
+        // 读流线程只接管 stdout（File 是 Send）。取消的 kill 由 cancel_scan 经
+        // CancelHandle 副本完成，这里只管把管道读到 EOF。
+        let reader_tx = ev_tx.clone();
+        let stdout = child.stdout.take().expect("spawn_child 一定带 stdout");
+        scope.spawn(move || {
+            let mut reader = std::io::BufReader::new(stdout);
+            let mut queued: HashSet<String> = HashSet::new();   // 已入队探测的 mac
+            let mut count = 0usize;
+            loop {
+                let mut line = Vec::new();
+                match reader.read_until(b'\n', &mut line) {
+                    Ok(0) => break,   // EOF：子进程结束（或被取消 kill 掉）
+                    Ok(_) => {}
+                    Err(_) => break,
+                }
+                if stop.load(Ordering::Relaxed) {
+                    continue; // 取消后丢弃残余行，等 EOF 收口
+                }
+                let text = String::from_utf8_lossy(&line);
+                for part in text.split('\n') {
+                    let part = part.trim();
+                    if part.is_empty() {
+                        continue;
+                    }
+                    match parse_line(part) {
+                        Some(Parsed::Device { mac, name }) => {
+                            let _ = reader_tx.send(ScanEvent::Device { mac: mac.clone(), name });
+                            // 发现即入队：集合按大写去重，同一台的名字补全不再排
+                            if queued.insert(mac.to_ascii_uppercase()) {
+                                let _ = req_tx.send(mac);
+                            }
+                        }
+                        Some(Parsed::Done { count: n }) => count = n,
+                        None => {} // 解析不了的行（版本差异）直接忽略
+                    }
+                }
+            }
+            drop(req_tx);   // 关请求通道 = 告诉探测线程不会再有新设备
+            let _ = reader_tx.send(ScanEvent::Done { count });
+        });
+
+        // 探测线程：串行消费新设备请求，一台一发 --probe-address 子进程（蓝牙
+        // 栈上并发连多台不可靠，识别又只是锦上添花，排队最稳）。
+        let probe_tx = ev_tx.clone();
+        let probe_exe = ctl::daemon_path();
+        scope.spawn(move || {
+            while let Ok(mac) = req_rx.recv() {
+                probe_one(&probe_exe, &mac, stop, probe_cancel, &probe_tx);
+            }
+        });
+        drop(ev_tx);   // 本线程不留发送端：两个线程都收尾后 recv() 才会 Err
+
+        // ---- 4. 事件转发。Done 行先攒着：等探测线程退出（队列排空、最后一台
+        // 也发了 ProbeDone）再发 on_event(Done)——识别中的面板要一直停留在扫描
+        // 进行态，扫描按钮的禁用语义保持不变。收到 Done 与发 Done 之间，探测
+        // 事件照常逐条转发，前端实时回填。
+        loop {
+            match ev_rx.recv() {
+                Ok(ScanEvent::Done { count }) => {
+                    outcome.count = count;
+                    held_done = Some(ScanEvent::Done { count });
+                }
+                Ok(ev) => on_event(ev),
+                Err(_) => break,   // 两个线程都收尾了
+            }
+        }
+    });
+
+    // ---- 5. 收尾：作用域已 join 两个工作线程；Child 的 wait/清坑位在这里做
     let code = child.wait(5000);
     *cancel_slot.lock().unwrap() = None;
 
+    // 取消/失败路径都不发 Done：面板会被 cancelled 回复或错误提示整体复位，
+    // 迟到的「扫描完成」闪一下反而误导（与旧代码"先查 stop/退出码再 Done"的
+    // 次序一致）。只有识别队列排空、扫描进程正常退出才报完成。
     if stop.load(Ordering::Relaxed) {
         restore(&mut outcome, standalone);
         outcome.cancelled = true;
@@ -189,9 +267,95 @@ pub fn run_scan(
         outcome.error = Some("扫描起不来（蓝牙适配器关了吗？原因见 hr-daemon.log）".into());
         return outcome;
     }
+    if let Some(ev) = held_done {
+        on_event(ev);
+    }
 
-    on_event(ScanEvent::Done { count: outcome.count });
     outcome
+}
+
+/// 探测一台设备：拉起 `hr-daemon --probe-address` 子进程，把 probe/done 行
+/// 翻译成 ScanEvent 发回 ev 通道。ProbeDone 统一在子进程收尾（EOF）后发
+/// ——被 kill 时子进程吐不出 done 行，EOF 是唯一保证恰好一条的收口。
+/// 起不来（exe 缺失/管道失败）只发 ProbeDone，不算扫描失败。
+fn probe_one(
+    exe: &Path,
+    mac: &str,
+    stop: &AtomicBool,
+    probe_cancel: &CancelSlot,
+    ev_tx: &mpsc::Sender<ScanEvent>,
+) {
+    if stop.load(Ordering::Relaxed) {
+        let _ = ev_tx.send(ScanEvent::ProbeDone { mac: mac.to_string() });
+        return;
+    }
+    let args = vec![
+        "--probe-address".to_string(),
+        mac.to_string(),
+        "--probe-sec".to_string(),
+        "6".to_string(),
+        "--quiet".to_string(),
+    ];
+    let mut child = match proc::spawn_child(exe, &args) {
+        Ok(c) => c,
+        Err(_) => {
+            let _ = ev_tx.send(ScanEvent::ProbeDone { mac: mac.to_string() });
+            return;
+        }
+    };
+    *probe_cancel.lock().unwrap() = Some(proc::CancelHandle::from_process(child.process));
+    if stop.load(Ordering::Relaxed) {
+        // 取消刚好赶在坑位写入前：补一刀，别让这一台拖到自然超时
+        child.kill();
+    }
+    let stdout = child.stdout.take().expect("spawn_child 一定带 stdout");
+    let mut reader = std::io::BufReader::new(stdout);
+    loop {
+        let mut line = Vec::new();
+        match reader.read_until(b'\n', &mut line) {
+            Ok(0) => break,
+            Ok(_) => {}
+            Err(_) => break,
+        }
+        if stop.load(Ordering::Relaxed) {
+            child.kill();
+            continue;
+        }
+        let text = String::from_utf8_lossy(&line);
+        for part in text.split('\n') {
+            let part = part.trim();
+            if part.is_empty() {
+                continue;
+            }
+            match parse_probe_line(part) {
+                Some(ProbeParsed::Probe { name, bpm }) => {
+                    let _ = ev_tx.send(ScanEvent::Probe { mac: mac.to_string(), name, bpm });
+                }
+                // done 行不直接转发：收尾事件走上面的 EOF 路径
+                Some(ProbeParsed::Done) | None => {}
+            }
+        }
+    }
+    let _ = child.wait(5000);
+    *probe_cancel.lock().unwrap() = None;
+    let _ = ev_tx.send(ScanEvent::ProbeDone { mac: mac.to_string() });
+}
+
+enum ProbeParsed {
+    Probe { name: String, bpm: i32 },
+    Done,
+}
+
+fn parse_probe_line(line: &str) -> Option<ProbeParsed> {
+    let v: Value = serde_json::from_str(line).ok()?;
+    match v.get("type")?.as_str()? {
+        "probe" => Some(ProbeParsed::Probe {
+            name: v.get("name").and_then(|n| n.as_str()).unwrap_or("").to_string(),
+            bpm: v.get("bpm").and_then(|b| b.as_i64()).unwrap_or(-1) as i32,
+        }),
+        "done" => Some(ProbeParsed::Done),
+        _ => None,
+    }
 }
 
 fn restore(outcome: &mut ScanOutcome, standalone: bool) {
@@ -211,6 +375,24 @@ fn sleep_cancellable(stop: &AtomicBool, ms: u32) {
     while waited < ms && !stop.load(Ordering::Relaxed) {
         unsafe { crate::win::Sleep(100) };
         waited += 100;
+    }
+}
+
+/// 取消扫描：置位 stop 标志并强杀扫描与探测两个子进程。扫描/探测线程都阻塞
+/// 在读管道上，只置位不 kill 叫不醒它们，所以两个坑位必须一起杀。
+/// 幂等：没在扫描时调用无害，stop 标志会在下次扫描线程开头复位；没在扫描
+/// 时两个坑位本来就是 None。
+pub fn cancel_scan(core: &Arc<Core>) {
+    core.scan_stop.store(true, Ordering::SeqCst);
+    // take + 强杀同一个锁区间完成；CancelHandle 持有独立句柄副本，
+    // 和 worker 线程 Child 的 Drop 互不影响（踩过的锁外 take+杀的窗口期）
+    let h = core.scan_cancel.lock().unwrap().take();
+    if let Some(h) = h {
+        h.terminate();
+    }
+    let h = core.scan_probe_cancel.lock().unwrap().take();
+    if let Some(h) = h {
+        h.terminate();
     }
 }
 
@@ -243,8 +425,9 @@ pub fn run_scan_cli(secs: u32) -> i32 {
     println!("正在扫描心率广播设备（{} 秒）… 手表请停在\"心率广播\"页面并保持亮屏。", secs);
     let stop = AtomicBool::new(false);
     let cancel_slot: CancelSlot = Mutex::new(None);
+    let probe_cancel: CancelSlot = Mutex::new(None);
     let mut devices: Vec<(String, String)> = Vec::new();
-    let out = run_scan(secs, &stop, &cancel_slot, true, |ev| match ev {
+    let out = run_scan(secs, &stop, &cancel_slot, &probe_cancel, true, |ev| match ev {
         ScanEvent::Stopping => {
             print!("hr-daemon 正在运行，先停掉它（手表连着时不广播）...");
             let _ = std::io::stdout().flush();
@@ -258,6 +441,18 @@ pub fn run_scan_cli(secs: u32) -> i32 {
                 println!("  发现 {:<17} {}", mac, if name.is_empty() { "（还没拿到名字）" } else { &name });
             }
         }
+        ScanEvent::Probe { mac, name, bpm } => {
+            // 逐台识别结果：真名 / 实时心率边探边打
+            if bpm >= 0 {
+                println!("  识别 {:<17} {}  {} bpm",
+                         mac, if name.is_empty() { "（还没拿到名字）" } else { &name }, bpm);
+            } else if !name.is_empty() {
+                println!("  识别 {:<17} {}", mac, &name);
+            } else {
+                println!("  识别中…（{}）", mac);
+            }
+        }
+        ScanEvent::ProbeDone { .. } => {}
         ScanEvent::Done { .. } => {}
     });
 

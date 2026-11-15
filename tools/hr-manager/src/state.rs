@@ -32,6 +32,9 @@ pub struct Core {
     /// 扫描取消标志（配合 cancel_slot 的 kill 才叫得醒阻塞在读管道上的扫描线程）
     pub scan_stop: AtomicBool,
     pub scan_cancel: CancelSlot,
+    /// 扫描期间逐台探测子进程的取消坑位（与 scan_cancel 一起由
+    /// scan_job::cancel_scan 强杀）
+    pub scan_probe_cancel: CancelSlot,
     /// 扫描正常结束后 daemon 保持停止（等用户选表）。此时若用户不选而离开
     /// （放弃/关面板），要把 daemon 拉回来。
     pub scan_needs_restore: AtomicBool,
@@ -56,6 +59,7 @@ impl Core {
             scan_running: AtomicBool::new(false),
             scan_stop: AtomicBool::new(false),
             scan_cancel: CancelSlot::new(None),
+            scan_probe_cancel: CancelSlot::new(None),
             scan_needs_restore: AtomicBool::new(false),
             daemon_stop_expected: AtomicBool::new(false),
             old_task: AtomicBool::new(false),

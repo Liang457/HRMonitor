@@ -33,8 +33,8 @@ hr-manager 的 GUI 栈（wry + tao + tray-icon）、构建期嵌版本信息的 
 - **两个显示端**：Afterburner 里是一条名为 `Heart rate` 的原生监控数据源（bpm），
   TrafficMonitor 里是任务栏上的一项 `HR 128`
 - **管理器 hr-manager**：托盘常驻 + 桌面化三标签配置面板（心率与连接、配置、插件），
-  实时心率、扫描选表、改配置、开机自启、打开插件目录都在面板里；右上角开关单独启停
-  hr-daemon
+  实时心率、扫描选表（自动识别设备名与实时心率）、改配置、开机自启、打开插件目录都在面板里；
+  右上角开关单独启停 hr-daemon
 - **两进程互相监测**：daemon 默认监视 hr-manager，探测不到就宽限 5 秒自动退出
   （`--watch-manager` 可调）；hr-manager 启动时兜底拉起 daemon，daemon 运行中被异常
   关闭只提示不自动重启，右上角开关手动启停
@@ -215,8 +215,9 @@ timeout_ms=15000  ; daemon 挂掉时插件自己的兜底超时
 2. 在运动健康里开启"心率广播"（不同机型路径略有差异，一般在设备 → 健康监测/心率里）。
 3. 手表停在"心率广播"页面并保持亮屏，离开该页面广播就停了。
 4. 打开 `build\hr-manager.exe` 面板点"扫描"选出手表：扫描会先停掉 daemon 等 2 秒
-   （手表被连着时不广播），设备随发现随出现，选完自动保存并重启 daemon，不选就点"放弃选择"
-   恢复采集。也可以命令行直接指定（MAC 可先用 `scan` 确认）：
+   （手表被连着时不广播），设备随发现随出现，并逐台自动识别真名和实时心率；选完自动
+   保存并重启 daemon，不选就点"放弃选择"恢复采集。也可以命令行直接指定（MAC 可先用
+   `scan` 确认）：
 
 ```cmd
 build\hr-manager.exe set demo 0
@@ -227,8 +228,8 @@ build\hr-manager.exe restart
 日志里出现 `模式: 直连配置里的地址 ...` → `BLE: 已连接 ...，已订阅心率通知` 就成了。
 地址留空 daemon 不会连接，任务栏和 OSD 一直显示 `--`，日志提示"未配置手表地址"。
 
-想确认广播在线，用 `build\hr-manager.exe scan 10`。很多设备在广播里常常不带名字，列表里
-那台会先显示"（还没拿到名字）"，认 MAC 就行。
+想确认广播在线，用 `build\hr-manager.exe scan 10`。很多设备在广播里常常不带名字，面板扫描
+时会逐台连上去补真名和实时心率，认不准就看 MAC。
 
 ## 显示端
 
@@ -331,7 +332,7 @@ daemon 会跟着收摊；反过来 daemon 被关掉时 manager 只弹一条提�
 ## hr-daemon 命令行参数
 
 ```
-hr-daemon.exe [--demo] [--address AA:BB:CC:DD:EE:FF] [--scan [秒数]] [--debug] [--quiet] [--watch-manager[=N]] [--version] [--help]
+hr-daemon.exe [--demo] [--address AA:BB:CC:DD:EE:FF] [--scan [秒数]] [--probe-address AA:BB:CC:DD:EE:FF [--probe-sec N]] [--debug] [--quiet] [--watch-manager[=N]] [--version] [--help]
 ```
 
 | 参数 | 作用 |
@@ -339,6 +340,7 @@ hr-daemon.exe [--demo] [--address AA:BB:CC:DD:EE:FF] [--scan [秒数]] [--debug]
 | `--demo` | 强制用模拟心率源（覆盖配置） |
 | `--address` | 强制直连指定手表（覆盖配置） |
 | `--scan [秒数]` | 只扫描附近的广播设备，边扫边往 stdout 按行吐 JSON（`device`/`done`），扫完退出 |
+| `--probe-address <MAC>` | 单台一次性探测：连上后取真名和第一拍心率，按行吐 JSON（`probe`/`done`）后退出；`--probe-sec` 定探测时长（默认 6 秒，钳 2~15） |
 | `--debug` | 连每条心率都写进日志 |
 | `--quiet` | 不附加控制台，日志只写文件（hr-manager 拉起时用） |
 | `--watch-manager[=N]` | 监视 hr-manager 是否存活（默认开启，宽限 5 秒），连续探测不到就自动退出；`=0` 关闭监视 |

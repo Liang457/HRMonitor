@@ -231,11 +231,8 @@ fn close_panel(core: &Arc<Core>, panel: &mut Option<panel::Panel>) {
         drop(p); // 字段序：webview 先析构 → WebView2 渲染进程退出
     }
     if core.scan_running.swap(false, Ordering::SeqCst) {
-        core.scan_stop.store(true, Ordering::SeqCst);
-        let h = core.scan_cancel.lock().unwrap().take();
-        if let Some(h) = h {
-            h.terminate();
-        }
+        // 置取消标志 + 强杀扫描与探测两个子进程（scan_job::cancel_scan 收口）
+        crate::scan_job::cancel_scan(core);
         // 扫描线程的取消分支看到标志会恢复 daemon；它失败时置回的粘滞标志
         // 由下面的消费点兜底。
     }

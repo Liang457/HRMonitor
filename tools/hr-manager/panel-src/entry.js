@@ -45,6 +45,7 @@ window.__hr = {
   },
   status(s) { renderStatus(s); },
   scanEvent(e) { renderScanEvent(e); },
+  probeEvent(m) { renderProbeEvent(m); },
   toast(msg) { showToast(msg); }
 };
 
@@ -55,6 +56,8 @@ function esc(s) {
     return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c];
   });
 }
+function toast(msg) { showToast(msg); }
+
 function showToast(msg) {
   const t = document.createElement("div");
   t.className = "toast";
@@ -81,10 +84,16 @@ function confirmDialog(message, okText) {
     $("confirmText").textContent = message;
     $("confirmOk").textContent = okText || "确认";
     let settled = false;
+    /* @material/web v2 后期版本把 closed 事件改成了不带 detail 的普通 Event
+       （旧版是 CustomEvent 且 detail.action 带按钮值），action 改落在 returnValue
+       上（原生 dialog 风格）。两个来源都读，兼容新旧小版本——只读 detail 的话
+       确认分支永远走不到，选表和恢复默认会「点了没反应」。 */
+    try { d.returnValue = ""; } catch (ignore) {}
     d.addEventListener("closed", function (e) {
       if (settled) return;
       settled = true;
-      resolve(e.detail.action === "ok");
+      const action = (e && e.detail && e.detail.action) || d.returnValue || "";
+      resolve(action === "ok");
     }, { once: true });
     d.show();
   });
@@ -193,17 +202,24 @@ function renderStatus(s) {
 
 // ---------------------------------------------------------------- 扫描
 let scanning = false;
+let probing = new Set();   // 正在识别（还没收到 probeDone）的 mac
+let probeBpm = {};         // mac -> 收到过的实时心率（负值 = 没读到）
 function setScanProgress(on) { $("scanProgress").hidden = !on; }
+function scanStatusText() {
+  const base = "扫描中，已发现 " + deviceCount() + " 台";
+  return probing.size > 0 ? base + "，正在识别设备…" : base;
+}
 function renderScanEvent(e) {
   const st = $("scanStatus");
   if (e.type === "stopping") { st.textContent = "正在停止 hr-daemon…"; }
   else if (e.type === "waiting") { st.textContent = "等待手表恢复广播…"; }
-  else if (e.type === "device") { upsertDevice(e.mac, e.name); st.textContent = "扫描中，已发现 " + deviceCount() + " 台"; }
+  else if (e.type === "device") { upsertDevice(e.mac, e.name); st.textContent = scanStatusText(); }
   else if (e.type === "done") {
     // UI 已被选表/取消复位（scanning 已清零）后才迟到的过期 done，忽略，
     // 免得把"扫描完成"和放弃按钮又顶出来
     if (!scanning) return;
     scanning = false;
+    probing = new Set();
     setScanProgress(false);
     $("btnScan").disabled = false;
     $("btnScanCancel").hidden = true;
@@ -212,23 +228,69 @@ function renderScanEvent(e) {
   }
 }
 function deviceCount() { return $("scanList").children.length; }
+
+// 逐台识别推送（probeEvent）：{mac,name,bpm} 是识别进度，{mac} 是单台收尾。
+// 名字非空就替换「未命名」；bpm>=0 在行右侧显示实时心率；收尾时始终没读到
+// 心率的显示灰色「无心率」。识别期间扫描状态行补一句提示。
+function renderProbeEvent(m) {
+  if (!scanning) return;   // 取消/复位后迟到的识别事件不碰界面
+  const done = !("bpm" in m);
+  if (done) {
+    probing.delete(m.mac);
+    if (probeBpm[m.mac] === undefined) probeBpm[m.mac] = -1;
+  } else {
+    probing.add(m.mac);
+    if (m.bpm >= 0) probeBpm[m.mac] = m.bpm;
+  }
+  const row = findDeviceRow(m.mac);
+  if (row) {
+    if (m.name) setDeviceName(row, m.name);
+    if (done) {
+      if (probeBpm[m.mac] < 0) setDeviceBpm(row, -1);
+    } else if (m.bpm >= 0) {
+      setDeviceBpm(row, m.bpm);
+    }
+  }
+  $("scanStatus").textContent = scanStatusText();
+}
+
+function findDeviceRow(mac) {
+  for (const d of $("scanList").children) {
+    if (d.dataset.mac === mac) return d;
+  }
+  return null;
+}
+function ensureDeviceRow(mac) {
+  let row = findDeviceRow(mac);
+  if (row) return row;
+  row = document.createElement("div");
+  row.className = "dev";
+  row.dataset.mac = mac;
+  row.innerHTML =
+    '<div class="devmain"><div class="nm"></div><div class="sub"></div></div>' +
+    '<span class="bpm-tag"></span><span class="tag"></span>';
+  row.onclick = function () { pickDevice(mac); };
+  $("scanList").appendChild(row);
+  setDeviceName(row, "");   // 没有名字时主文本显示 MAC
+  return row;
+}
+// 主文本 = 设备名（没有就显示 MAC）；副行 = MAC，没名字时注明「未命名」
+function setDeviceName(row, name) {
+  const mac = row.dataset.mac;
+  row.querySelector(".nm").textContent = name || mac;
+  row.querySelector(".sub").textContent = name ? mac : mac + " · 未命名";
+}
+// bpm>=0 显示实时心率胶囊；-1 显示灰色「无心率」；其余清空
+function setDeviceBpm(row, bpm) {
+  const tag = row.querySelector(".bpm-tag");
+  if (bpm >= 0) { tag.textContent = bpm + " bpm"; tag.className = "bpm-tag"; }
+  else if (bpm === -1) { tag.textContent = "无心率"; tag.className = "bpm-tag none"; }
+  else { tag.textContent = ""; tag.className = "bpm-tag"; }
+}
 function upsertDevice(mac, name) {
-  const list = $("scanList");
-  let row = null;
-  for (const d of list.children) {
-    if (d.dataset.mac === mac) { row = d; break; }
-  }
-  if (!row) {
-    row = document.createElement("div");
-    row.className = "dev";
-    row.dataset.mac = mac;
-    row.innerHTML = '<span class="mac"></span><span class="nm"></span><span class="tag"></span>';
-    row.onclick = function () { pickDevice(mac); };
-    list.appendChild(row);
-  }
-  row.children[0].textContent = mac;
-  row.children[1].textContent = name || "未命名";
-  if (row.dataset.mac === currentAddress) row.children[2].textContent = "当前";
+  const row = ensureDeviceRow(mac);
+  if (name) setDeviceName(row, name);
+  if (row.dataset.mac === currentAddress) row.querySelector(".tag").textContent = "当前";
 }
 function resetScanUi() {
   $("scanList").innerHTML = "";
@@ -239,6 +301,8 @@ function resetScanUi() {
   $("btnScanCancel").disabled = false; // 别带着 disabled 态被下次扫描重新显示
   $("btnScan").disabled = false;
   scanning = false;
+  probing = new Set();
+  probeBpm = {};
   if (daemonPending === null) $("daemonSwitch").disabled = false;   // 没有启停在途才放开
 }
 async function pickDevice(mac) {
@@ -296,7 +360,7 @@ function fillForm(cfg) {
   }
   // 当前列表里标"当前"
   for (const d of $("scanList").children) {
-    d.children[2].textContent = d.dataset.mac === currentAddress ? "当前" : "";
+    d.querySelector(".tag").textContent = d.dataset.mac === currentAddress ? "当前" : "";
     d.classList.toggle("cur", d.dataset.mac === currentAddress);
   }
 }

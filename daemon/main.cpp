@@ -38,6 +38,10 @@ struct Options {
     bool               debug       = false;   // --debug：连每条心率都写进日志
     bool               scan        = false;   // --scan：只扫描设备，按行输出 JSON 后退出
     int                scanSec     = 0;       // 0 = 未在命令行给出，用配置里的 scan_timeout_ms
+    bool               probe       = false;   // --probe-address：单台一次性探测，按行输出 JSON 后退出
+    bool               probeAddrGiven = false;// 命令行显式给过 --probe-address（哪怕解析失败）
+    unsigned long long probeAddr   = 0;
+    int                probeSec    = 0;       // 0 = 未在命令行给出，用默认 6 秒
     bool               quiet       = false;   // --quiet：不附加控制台，日志只写文件（hr-manager 拉起时用）
     bool               version     = false;   // --version：打印版本号后退出
     int                watchMgr    = -1;      // manager 监视：-1 = 未给参数（默认开启，宽限 5 秒）；
@@ -251,6 +255,11 @@ void PrintUsage() {
     LogInfo("                             最后一行 {\"type\":\"done\",...}，然后退出");
     LogInfo("                             （给 hr-manager 的选表面板用）");
     LogInfo("");
+    LogInfo("  hr-daemon.exe --probe-address AA:BB:CC:DD:EE:FF [--probe-sec N]");
+    LogInfo("                             一次性探测单台设备：连上后取真名和第一拍");
+    LogInfo("                             心率，按行往 stdout 输出 JSON（probe/done）");
+    LogInfo("                             后退出（给选表面板逐台识别用）");
+    LogInfo("");
     LogInfo("配置: %s（不存在则用默认值，可改）", ToUtf8(HrDaemonIniPath()).c_str());
     LogInfo("日志: exe 同级 log\\ 子目录里的 hr-daemon.log（写完即刷盘，可边跑边看）。");
     LogInfo("      每次启动开新的一份，最多留 3 份（.1 .2 是之前几次的）；");
@@ -425,6 +434,27 @@ Options ParseArgs(int argc, wchar_t** argv, std::vector<std::string>& warns) {
                 long sec = wcstol(argv[i + 1], &end, 10);
                 if (end && *end == L'\0' && sec > 0) { o.scanSec = (int)sec; ++i; }
             }
+        } else if (a == L"--probe-address") {
+            o.probeAddrGiven = true;   // 显式指定过：解析失败就得拦下来（同 --address）
+            if (i + 1 >= argc) { warn("--probe-address 后面缺少 MAC 地址"); continue; }
+            const std::wstring v = argv[++i];
+            if (HrParseMac(v, o.probeAddr)) {
+                o.probe = true;
+            } else {
+                warn("无法解析 MAC 地址 \"%s\"，应形如 AA:BB:CC:DD:EE:FF", ToUtf8(v).c_str());
+            }
+        } else if (a == L"--probe-sec") {
+            // 探测时长（秒）。缺参/格式错按警告处理并保持默认 6 秒——探测是
+            // 尽力而为的识别增强，不值得为它拒绝启动
+            if (i + 1 >= argc) { warn("--probe-sec 后面缺少秒数，按默认 6 秒处理"); continue; }
+            const std::wstring v = argv[++i];
+            wchar_t* end = nullptr;
+            long sec = wcstol(v.c_str(), &end, 10);
+            if (end && *end == L'\0' && sec > 0) {
+                o.probeSec = (int)sec;
+            } else {
+                warn("无法解析 --probe-sec=\"%s\"（要正整数秒），按默认 6 秒处理", ToUtf8(v).c_str());
+            }
         } else if (a == L"--watch-manager") {
             o.watchMgr = kWatchMgrGraceSec;   // 裸参数：默认开启（宽限 5 秒）
         } else if (a.rfind(L"--watch-manager=", 0) == 0) {
@@ -459,8 +489,8 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, PWSTR, int) {
     std::vector<std::wstring> notes;
     g_cfg = HrConfig::Load(iniPath, &notes);
 
-    // 参数也要赶在 LogInit 之前：--scan 是一次性进程，不该轮转日志、也不该
-    // 顶掉 daemon 的历史。它的警告先攒着，等日志开了再打。
+    // 参数也要赶在 LogInit 之前：--scan/--probe 是一次性进程，不该轮转日志、
+    // 也不该顶掉 daemon 的历史。它的警告先攒着，等日志开了再打。
     int argc = 0;
     LPWSTR* argv = CommandLineToArgvW(GetCommandLineW(), &argc);
     std::vector<std::string> argWarns;
@@ -476,7 +506,7 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, PWSTR, int) {
     const std::wstring logDir = HrJoinPath(HrExeDir(), L"log");
     CreateDirectoryW(logDir.c_str(), nullptr);   // 已存在则失败，忽略
 
-    const std::wstring logPath = LogInit(logDir, g_cfg.log_max_kb, /*rotate=*/!opt.scan);
+    const std::wstring logPath = LogInit(logDir, g_cfg.log_max_kb, /*rotate=*/!(opt.scan || opt.probe));
     if (!logPath.empty()) LogInfo("日志文件: %s", ToUtf8(logPath).c_str());
     else                  LogWarn("无法创建日志文件，仅输出到控制台");
     LogInfo("配置文件: %s%s", ToUtf8(iniPath).c_str(),
@@ -497,6 +527,13 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, PWSTR, int) {
         LogShutdown();
         return 2;
     }
+    // --probe-address 同语义：探测的目标地址指错了宁可不跑，别让消费端拿到
+    // 看似成功实则空转的结果
+    if (opt.probeAddrGiven && !opt.probe) {
+        LogError("--probe-address 指定失败（缺参数或格式不是 AA:BB:CC:DD:EE:FF），拒绝启动");
+        LogShutdown();
+        return 2;
+    }
 
     // ---- --scan：只扫设备，按行往 stdout 输出 JSON 后退出（给 hr-manager 用）。
     // 没在命令行给秒数时用配置里的 scan_timeout_ms——这个键以前只喂给走不到的
@@ -512,6 +549,19 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE, PWSTR, int) {
         if (n < 0) LogError("扫描失败（蓝牙适配器不可用？）");
         LogShutdown();
         return n < 0 ? 1 : 0;
+    }
+
+    // ---- --probe-address：单台一次性探测，取真名和第一拍心率后退出
+    // （给 hr-manager 的选表扫描逐台识别用；输出契约见 hr_source.h）
+    if (opt.probe) {
+        int secs = opt.probeSec;
+        if (secs <= 0) secs = 6;
+        LogInfo("探测模式: 连 %s，最多 %d 秒，结果按行输出到 stdout",
+                ToUtf8(HrFormatMac(opt.probeAddr)).c_str(), secs);
+        const int rc = BleProbeStream(opt.probeAddr, secs);
+        if (rc < 0) LogError("探测失败（蓝牙适配器不可用？）");
+        LogShutdown();
+        return rc < 0 ? 1 : 0;
     }
 
     const int rc = Run(hInst, opt);

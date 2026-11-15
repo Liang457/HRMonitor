@@ -113,17 +113,37 @@ pub fn dispatch(core: &Arc<Core>, body: &str) {
             std::thread::spawn(move || {
                 core2.scan_stop.store(false, Ordering::SeqCst);
                 // standalone=false：面板路径拉回的 daemon 带默认 manager 监视
-                let out = scan_job::run_scan(secs, &core2.scan_stop, &core2.scan_cancel, false, |ev| {
-                    let payload = match ev {
-                        scan_job::ScanEvent::Stopping => json!({ "type": "stopping" }),
-                        scan_job::ScanEvent::Waiting => json!({ "type": "waiting" }),
-                        scan_job::ScanEvent::Device { mac, name } => {
-                            json!({ "type": "device", "mac": mac, "name": name })
-                        }
-                        scan_job::ScanEvent::Done { count } => json!({ "type": "done", "count": count }),
-                    };
-                    core2.eval(format!("window.__hr.scanEvent({});", payload));
-                });
+                let out = scan_job::run_scan(
+                    secs,
+                    &core2.scan_stop,
+                    &core2.scan_cancel,
+                    &core2.scan_probe_cancel,
+                    false,
+                    |ev| {
+                        // 逐台识别走独立推送通道（probeEvent）：前端按 mac 回填真名和
+                        // 实时心率，不和扫描状态机（scanEvent）搅在一起
+                        let (js, payload) = match ev {
+                            scan_job::ScanEvent::Probe { mac, name, bpm } => (
+                                "probeEvent",
+                                json!({ "mac": mac, "name": name, "bpm": bpm }),
+                            ),
+                            scan_job::ScanEvent::ProbeDone { mac } => (
+                                "probeEvent",
+                                json!({ "mac": mac }),
+                            ),
+                            scan_job::ScanEvent::Stopping => ("scanEvent", json!({ "type": "stopping" })),
+                            scan_job::ScanEvent::Waiting => ("scanEvent", json!({ "type": "waiting" })),
+                            scan_job::ScanEvent::Device { mac, name } => (
+                                "scanEvent",
+                                json!({ "type": "device", "mac": mac, "name": name }),
+                            ),
+                            scan_job::ScanEvent::Done { count } => {
+                                ("scanEvent", json!({ "type": "done", "count": count }))
+                            }
+                        };
+                        core2.eval(format!("window.__hr.{}({});", js, payload));
+                    },
+                );
                 core2.scan_running.store(false, Ordering::SeqCst);
                 if let Some(e) = &out.error {
                     // 失败：停了没拉回来的（本次或上次扫描留下的）都就地兜底
@@ -164,7 +184,7 @@ pub fn dispatch(core: &Arc<Core>, body: &str) {
         }
 
         "scan_cancel" => {
-            cancel_scan(core);
+            scan_job::cancel_scan(core);
             core.reply(id, json!({ "ok": true }));
         }
 
@@ -196,7 +216,7 @@ pub fn dispatch(core: &Arc<Core>, body: &str) {
                 // restart 并发没害处：单实例互斥体保证最终只有一份 daemon，
                 // 且 ini 已在重启前写入，收敛后 daemon 一定带着新地址在跑。
                 if core2.scan_running.load(Ordering::SeqCst) {
-                    cancel_scan(&core2);
+                    scan_job::cancel_scan(&core2);
                 }
                 let result = (|| -> Result<(String, String), String> {
                     let mut note = String::new();
@@ -324,19 +344,6 @@ fn apply_values(values: &Value) -> Result<(config::Config, bool), String> {
     }
     config::save(&cfg, &path)?;
     Ok((cfg, true))
-}
-
-/// 取消扫描：置位 stop 标志并强杀扫描子进程。扫描线程阻塞在读管道上，
-/// 只置位不 kill 叫不醒它。幂等：没在扫描时调用无害，stop 标志会在下次
-/// 扫描线程开头复位；没在扫描时 cancel_slot 本来就是 None。
-fn cancel_scan(core: &Arc<Core>) {
-    core.scan_stop.store(true, Ordering::SeqCst);
-    // take + 强杀同一个锁区间完成；CancelHandle 持有独立句柄副本，
-    // 和扫描线程 Child 的 Drop 互不影响
-    let h = core.scan_cancel.lock().unwrap().take();
-    if let Some(h) = h {
-        h.terminate();
-    }
 }
 
 /// daemon 因扫描停着（粘滞标志）→ 就地拉回来。成功清标志；已经在跑只清标志

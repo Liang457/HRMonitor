@@ -566,6 +566,27 @@ void ScanEmitJson(const char* type, unsigned long long addr, const std::wstring&
     ScanWriteLine(line);
 }
 
+// --probe 的探测行：结构同 device 行多一个 bpm 字段（-1 = 尚未读到）。
+// 名字为空输出空串，消费端维持「未命名」。
+void ProbeEmitJson(unsigned long long addr, const std::wstring& name, int bpm) {
+    std::string line = "{\"type\":\"probe\",\"mac\":\"";
+    line += ToUtf8(HrFormatMac(addr));
+    line += "\",\"name\":\"";
+    line += JsonEscape(ToUtf8(name));
+    line += "\",\"bpm\":";
+    line += std::to_string(bpm);
+    line += "}\r\n";
+    ScanWriteLine(line);
+}
+
+// --probe 的收尾行：本台探测结束（含失败），消费端据此停掉这一台的「识别中」态
+void ProbeEmitDone(unsigned long long addr) {
+    std::string line = "{\"type\":\"done\",\"mac\":\"";
+    line += ToUtf8(HrFormatMac(addr));
+    line += "\"}\r\n";
+    ScanWriteLine(line);
+}
+
 } // namespace
 
 int BleScanStream(int seconds) {
@@ -609,4 +630,78 @@ int BleScanStream(int seconds) {
     }
     LogInfo("BLE: 扫描结束，找到 %zu 台设备", found.size());
     return (int)found.size();
+}
+
+// ---------------------------------------------------------------- --probe 一次性探测
+
+// 连上指定设备读真名和第一拍心率，按行输出 JSON 后退出（给 hr-manager 的选表
+// 扫描逐台识别用）。连接/服务发现/订阅/取名字全部复用 ConnectAndStream——probe
+// 只是它的旁路调用，不改采集主链路的任何行为；两者不会同时跑（扫描前 daemon 已停）。
+// 输出契约见 hr_source.h。返回 0 = 流程走完（含没连上、没读到心率的失败）；
+// -1 = 启动级失败（蓝牙栈不可用）。
+int BleProbeStream(unsigned long long addr, int seconds) {
+    try {
+        winrt::init_apartment(winrt::apartment_type::multi_threaded);
+    } catch (const winrt::hresult_error& e) {
+        LogError("BLE: init_apartment 失败 0x%08X —— 蓝牙栈不可用", (unsigned)e.code().value);
+        return -1;
+    }
+
+    if (seconds < 2)  seconds = 2;
+    if (seconds > 15) seconds = 15;
+    const int timeoutMs = seconds * 1000;
+
+    HrSink sink;
+    std::atomic<bool> stop{ false };
+
+    // 连接线程：ConnectAndStream 自带 stop 检查（AwaitOp 每 20ms、数据循环每
+    // 100ms），时间一到置位即可让它干净收手。异常就地兜住（Run 同款）：探测
+    // 失败走 bpm=-1 的超时路径，不算进程级错误。
+    std::thread worker([&] {
+        try {
+            ConnectAndStream(sink, stop, addr, HrFormatMac(addr), timeoutMs);
+        } catch (const winrt::hresult_error& e) {
+            LogWarn("BLE: 探测连接异常 0x%08X %s",
+                    (unsigned)e.code().value, Narrow(e.message()).c_str());
+        } catch (const std::exception& e) {
+            LogWarn("BLE: 探测连接异常 %s", e.what());
+        } catch (...) {
+            LogWarn("BLE: 探测连接异常（未知类型）");
+        }
+    });
+
+    bool nameSent = false;
+    bool gotBpm   = false;
+    const ULONGLONG deadline = GetTickCount64() + (ULONGLONG)timeoutMs;
+    while (true) {
+        Sleep(100);
+        const HrSink::Snapshot s = sink.Get();
+        // 名字就绪（订阅成功后 ConnectAndStream 会写 sink）先发一条，心率随后到
+        if (!nameSent && !s.device.empty()) {
+            nameSent = true;
+            ProbeEmitJson(addr, s.device, -1);
+        }
+        if (s.bpm >= 0) {
+            gotBpm = true;
+            ProbeEmitJson(addr, s.device, s.bpm);   // 读到第一拍即发并结束
+            break;
+        }
+        if (GetTickCount64() >= deadline) break;
+    }
+
+    // 退出前置位并等连接线程收手（事件注销、退订、Close 都在它里面做干净）
+    stop = true;
+    worker.join();
+
+    if (!gotBpm) {
+        // 总时长到还没读到心率：补一条 bpm=-1 的终行（名字可能仍为空），
+        // 消费端「无心率」的判断依据就是始终没收到过 bpm>=0
+        ProbeEmitJson(addr, sink.Get().device, -1);
+    }
+    ProbeEmitDone(addr);
+    LogInfo("BLE: 探测结束 %s：名字%s，心率%s",
+            MacToString(addr).c_str(),
+            nameSent ? "已取到" : "未取到",
+            gotBpm ? "已读到" : "未读到");
+    return 0;
 }

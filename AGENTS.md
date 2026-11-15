@@ -64,7 +64,9 @@ cmd /c tools\hr-manager\build.cmd :: build\hr-manager.exe            (Rust，GUI
   `scripts\migrate-1.1.3.ps1` 一次性搬进 config\（留 .bak），别在程序里加"搬家"逻辑。
 - **daemon 是唯一的蓝牙入口**：连接/重连/扫描全在 `daemon/ble.cpp`（C++/WinRT，链接
   windowsapp.lib）。`--scan` 按行往 stdout 吐 JSON（`{"type":"device",...}`/`{"type":"done",...}`），
-  hr-manager 起子进程读流，自己不碰蓝牙。
+  `--probe-address <MAC>` 复用 ConnectAndStream 做单台一次性探测（取真名和第一拍心率，输出
+  `{"type":"probe",...,"bpm":-1}` / `{"type":"probe",...,"bpm":126}` / `{"type":"done","mac":...}`，
+  `--probe-sec` 默认 6 秒钳 2..15），hr-manager 起子进程读流，自己不碰蓝牙。
 - hr-manager（Rust）= 托盘常驻 + 按需弹出的 WebView2 配置面板 + CLI 子命令：管理 daemon
   生命周期（FindWindowW+WM_CLOSE 优雅停 / OpenMutexW 探活）、读写 ini、读共享内存显示实时
   状态、调度扫描、管理开机自启（注册表 Run 键）。**两进程互相监测**（2026-11-15 起）：
@@ -99,7 +101,9 @@ cmd /c tools\hr-manager\build.cmd :: build\hr-manager.exe            (Rust，GUI
   因此一定对。Run 键只拉起 manager，daemon 由 manager 的启动兜底带起来；daemon 运行中
   被异常关闭不自动重启，面板开关手动启停（见架构边界的互相监测）。老版本的计划任务方案已废弃（会话 0 命名空间的坑随之消失），残留清理用
   `scripts\uninstall-task.ps1`，面板会检测残留并提示。
-- daemon 命令行参数（`--demo`/`--address`）优先于 hr-daemon.ini；daemon 单实例互斥体
+- daemon 命令行参数（`--demo`/`--address`）优先于 hr-daemon.ini；一次性模式另有
+  `--scan [秒]` 与 `--probe-address <MAC> [--probe-sec N]`（输出契约见 `hr_source.h`）。
+  daemon 单实例互斥体
   `Local\BleHR_daemon`，manager 单实例互斥体 `Local\BleHR_manager`。第二个 manager
   实例 SetEvent `Local\BleHR_manager_open` 通知第一个实例打开面板后退出——打开事件要带
   `EVENT_MODIFY_STATE` 权限位，只给 SYNCHRONIZE 的话 SetEvent 会静默失败（踩过）。
@@ -116,6 +120,11 @@ cmd /c tools\hr-manager\build.cmd :: build\hr-manager.exe            (Rust，GUI
   就自动恢复）兜住"扫描中途 manager 被杀"。扫描线程阻塞在读管道上，取消必须
   置位 + kill 子进程双管齐下；`--scan` 子进程被 Job Object（KILL_ON_JOB_CLOSE）拴着，
   manager 死则子进程必死。
+- **扫描期逐台识别**（2026-11-15 起）：广播里常不带设备名，扫描读流线程发现新 mac 即入队
+  （mpsc，已知 mac 的名字补全不重复入队），探测线程串行跑 `--probe-address` 一次性子进程补
+  真名和实时心率，事件经 `window.__hr.probeEvent` 回填面板。扫描读流完**不立刻发 Done**，
+  等识别队列排空才发（识别中面板保持扫描进行态）。选表/取消/关面板统一走
+  `scan_job::cancel_scan`，它同时强杀扫描与探测两个坑位（`Core::scan_probe_cancel`）。
 - TrafficMonitor V1.86 只扫 `plugins\*.dll`，插件必须是 `.dll` 不是 `.tmd`；
   `config.ini` 的 `plugin_disabled` 是黑名单，插件默认即启用。
 - **tm-plugin 有两个宿主窗口线程**（主窗口/任务栏各自 timer）并发调 `DataRequired()`：

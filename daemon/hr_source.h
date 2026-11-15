@@ -86,3 +86,15 @@ std::unique_ptr<HrSource> MakeBleSource(HrSink& sink, const BleConfig& cfg);
 // 消费端按 mac 去重，后到的名字覆盖前面的。输出写不进去（管道断了/没有
 // 控制台）不当作错误，扫描照常跑完。返回发现的设备数；-1 表示扫描起不来。
 int BleScanStream(int seconds);
+
+// 探测-only 模式（供 hr-manager 的选表扫描逐台识别用）：
+// 连上指定 MAC，复用 ConnectAndStream（服务发现/订阅 0x2A37/device.Name()），
+// 最多读 seconds 秒（钳 2..15），边读边往 stdout 按行输出 JSON（UTF-8）：
+//   {"type":"probe","mac":"AA:BB:CC:DD:EE:FF","name":"手表名","bpm":-1}  名字就绪即发（bpm 还没读到）
+//   {"type":"probe","mac":"...","name":"...","bpm":126}                  读到第一拍心率即发并结束
+//   {"type":"done","mac":"..."}                                          本台探测收尾（含失败）
+// 名字为空输出空串（消费端维持「未命名」）；名字与 bpm 分行多次发也允许
+// （消费端按 mac 覆盖），同一台最多三行。总时长到还没读到心率时补一条
+// bpm=-1 的终行再收尾。返回 0 = 流程走完（含探测失败）；-1 = 启动级失败
+// （蓝牙栈不可用）。
+int BleProbeStream(unsigned long long addr, int seconds);
