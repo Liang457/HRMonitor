@@ -137,10 +137,12 @@ function bindDaemonSwitch() {
     }
     const target = swGet(sw);
     daemonPending = target;
-    sw.disabled = true;
+    // 不禁用开关：md-switch 点下去的滑动动画要靠组件保持正常态才能播完，
+    // 同步置 disabled 会把轨道/滑块颜色瞬切成 disabled 灰，动画被吞掉。
+    // pending 期间再点会走上面的弹回分支，不会重复发命令。
     clearTimeout(daemonTimer);
     daemonTimer = setTimeout(function () {
-      // 20 秒兜底：状态一直没推过来（推送线程被卡）也别永远禁用
+      // 20 秒兜底：状态一直没推过来（推送线程被卡）也把 pending 清掉
       if (daemonPending !== null) {
         daemonPending = null;
         sw.disabled = scanning;

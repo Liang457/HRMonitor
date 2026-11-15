@@ -361,7 +361,8 @@ int Run(HINSTANCE hInst, const Options& opt) {
                 HR_VERSION_STRING, GetCurrentProcessId());
 
     // ---- manager 监视：参数未给时默认开启、宽限 5 秒（两进程互相监测的一半：
-    // manager 不再兜底拉起 daemon，daemon 自己盯 manager，被关掉就跟着退）
+    // daemon 自己盯 manager，manager 退出就跟着退；manager 启动时兜底拉起 daemon，
+    // daemon 被异常关闭只提示不自动重启）
     g_watchMgrSec = (opt.watchMgr < 0) ? kWatchMgrGraceSec : opt.watchMgr;
     if (g_watchMgrSec > 0)
         LogInfo("manager 监视: 开启（宽限 %d 秒，hr-manager 不在时自动退出）", g_watchMgrSec);

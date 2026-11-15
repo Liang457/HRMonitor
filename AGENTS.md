@@ -70,8 +70,9 @@ cmd /c tools\hr-manager\build.cmd :: build\hr-manager.exe            (Rust，GUI
   状态、调度扫描、管理开机自启（注册表 Run 键）。**两进程互相监测**（2026-11-15 起）：
   daemon 默认监视 manager（OpenMutexW 探 `Local\BleHR_manager`，宽限 5 秒，`--watch-manager=N`
   调宽限、`=0` 关闭——CLI 的 start/restart/scan 拉起 daemon 一律带 =0，因为 CLI 进程马上
-  退出）；manager **不自动启动 daemon**，启停收进面板右上角开关，状态轮询线程发现 daemon
-  意外退出（非扫描/非主动操作，`Core::daemon_stop_expected` 豁免过渡期）只 toast 提示。
+  退出）；manager 启动时兜底确保 daemon 在跑（开机自启只拉起 manager，采集由这一下带起
+  来），但 daemon 运行中被异常关闭只 toast 提示、**不再自动重启**（非扫描/非主动操作，
+  `Core::daemon_stop_expected` 豁免过渡期）；面板右上角开关手动启停。
   面板关闭即整体销毁 WebView2（内存回落），托盘进程本身保留。
 - **依赖策略：业务代码不引第三方**。C++ 只用 Windows SDK（BLE 用自带 C++/WinRT）。Rust 端
   仅有的例外是 hr-manager 的 GUI 栈（wry + tao + tray-icon + serde/serde_json）和构建期
@@ -95,8 +96,8 @@ cmd /c tools\hr-manager\build.cmd :: build\hr-manager.exe            (Rust，GUI
 - 换行符约定：.cmd/.bat/.ps1 = CRLF；.cpp/.h/.rs/.md/.toml/.ini/.lock = LF。
 - **自启用注册表 Run 键**（`HKCU\...\CurrentVersion\Run`，值名 `BleHRManager`，指向
   `hr-manager.exe --minimized`）：无管理员、天然在当前登录会话，共享内存 `Local\` 命名空间
-  因此一定对。Run 键只拉起 manager；daemon 不自动启动，面板开关手动启停（见架构边界的
-  互相监测）。老版本的计划任务方案已废弃（会话 0 命名空间的坑随之消失），残留清理用
+  因此一定对。Run 键只拉起 manager，daemon 由 manager 的启动兜底带起来；daemon 运行中
+  被异常关闭不自动重启，面板开关手动启停（见架构边界的互相监测）。老版本的计划任务方案已废弃（会话 0 命名空间的坑随之消失），残留清理用
   `scripts\uninstall-task.ps1`，面板会检测残留并提示。
 - daemon 命令行参数（`--demo`/`--address`）优先于 hr-daemon.ini；daemon 单实例互斥体
   `Local\BleHR_daemon`，manager 单实例互斥体 `Local\BleHR_manager`。第二个 manager

@@ -36,7 +36,8 @@ hr-manager 的 GUI 栈（wry + tao + tray-icon）、构建期嵌版本信息的 
   实时心率、扫描选表、改配置、开机自启、打开插件目录都在面板里；右上角开关单独启停
   hr-daemon
 - **两进程互相监测**：daemon 默认监视 hr-manager，探测不到就宽限 5 秒自动退出
-  （`--watch-manager` 可调）；hr-manager 不自动启动 daemon，发现 daemon 意外退出只提示
+  （`--watch-manager` 可调）；hr-manager 启动时兜底拉起 daemon，daemon 运行中被异常
+  关闭只提示不自动重启，右上角开关手动启停
 - **模拟源**：`demo=1` 时用心率随机游走代替手表，没有表也能验通整条链路
 - **设备区分**：按 MAC 直连，换手表只改 `address` 一行
 - **版本一致**：四个 exe/DLL 的文件属性带版本号（资源管理器 → 属性 → 详细信息），

@@ -66,10 +66,22 @@ pub fn run(minimized: bool) -> i32 {
     // 上次在扫描中死掉的话，daemon 还停着：看到恢复标记就把它拉回来。
     crate::scan_job::restore_pending();
 
-    // 政策变更（2026-11-15）：开机自启只拉起 manager 本身，daemon 不再自动启动，
-    // 启停收进面板右上角的开关手动操作；daemon 那头反过来默认监视 manager
-    // （探测不到就宽限几秒自行退出），两进程谁都不留孤儿。manager 发现 daemon
-    // 意外退出只 toast 提示，不自动拉起（见 spawn_status_thread 的跳变检测）。
+    // 开机兜底（2026-11-15 定稿）：开机自启只拉起 manager 本身，daemon 靠这里带
+    // 起来，登录后无需开面板点开关。语义边界：兜底只在 manager 启动时做一次；
+    // daemon 运行中被异常关闭（见 spawn_status_thread 的跳变检测）只 toast 提示、
+    // 不再自动重启。daemon 那头反过来默认监视 manager，探测不到就宽限几秒自行
+    // 退出，两进程谁都不留孤儿。ctl::start 最长等 8 秒，丢后台线程别卡主循环。
+    {
+        let core2 = core.clone();
+        std::thread::spawn(move || {
+            if !ctl::running() {
+                if let Err(e) = ctl::start() {
+                    // 面板没开时 toast 落不到界面上，状态卡会显示"未运行"，够定位
+                    core2.toast(&e);
+                }
+            }
+        });
+    }
 
     // ---- 托盘。起不来就退化成"纯面板"模式：面板一关即退出。
     let tray = match crate::tray::Tray::build() {
